@@ -22,3 +22,6 @@ To launch the interactive GUI with the provided example:
 python main_app.py
 ```
 You can load the provided `example.bmp` and `example_state.sav` to see the algorithm in action.
+
+## User Manual
+For a detailed breakdown of the GUI parameters, physical models (REL & stopping power), and workflow for large datasets, please refer to the [User Manual (user_manual.md)](user_manual.md).
