@@ -1,0 +1,6 @@
+numpy
+scipy
+matplotlib
+opencv-python
+Pillow
+cupy-cuda12x

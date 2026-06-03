@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.npy
+# We keep example.bmp and example_state.sav for demonstration, but ignore other large files
+*.avi
+*.mp4
