@@ -1,10 +1,23 @@
 # CR-39 Pit Detection & Etching Physics Model
 
-This repository contains an advanced, GPU-accelerated algorithm for analyzing CR-39 Solid-State Nuclear Track Detectors. It automates the detection of overlapping pits, performs ellipse fitting to extract major/minor axes, and reconstructs incident ion energy and angle using a robust physical etching model.
+<div align="center">
+  <a href="https://pubs.aip.org/aip/adv/article/16/7/075051/3399496/Automated-CR-39-pit-detection-for-energy-and">
+    <img src="https://img.shields.io/badge/AIP_Advances-Featured_Article-1f5b9d?style=for-the-badge" alt="AIP Advances Featured Article">
+  </a>
+  <a href="https://pubs.aip.org/aip/adv/article/16/7/075051/3399496/Automated-CR-39-pit-detection-for-energy-and">
+    <img src="https://img.shields.io/badge/AIP-Scilight-2ea44f?style=for-the-badge" alt="AIP Scilight">
+  </a>
+</div>
+
+> 🌟 **Featured Article & Scilight in AIP Advances** 🌟  
+> The physical models and algorithms driving this repository have been officially published in **AIP Advances**, and we are honored to be selected as both a **Featured Article** and highlighted in a **Scilight**.  
+> 📖 **Read the open-access paper:** [Automated CR-39 pit detection for energy and angle reconstruction](https://pubs.aip.org/aip/adv/article/16/7/075051/3399496/Automated-CR-39-pit-detection-for-energy-and)
+
+This repository contains a GPU-accelerated algorithm for analyzing CR-39 Solid-State Nuclear Track Detectors. It automates the detection of overlapping pits, performs ellipse fitting to extract major/minor axes, and reconstructs incident ion energy and angle using a physical etching model.
 
 ## Core Features
-1. **GPU Acceleration**: Utilizes `cupy` to massively parallelize image filters and morphological operations, enabling real-time processing of high-resolution microscope images.
-2. **Advanced Pit Detection**: Handles noisy environments, scratches, dust artifacts, and overlapping pits.
+1. **GPU Acceleration**: Utilizes `cupy` to parallelize image filters and morphological operations for processing high-resolution microscope images.
+2. **Pit Detection Strategy**: Incorporates morphological filters to process images containing scratches, dust artifacts, and overlapping pits.
 3. **Physical Etching Model**: Maps geometric track properties back to particle stopping power (REL), energy, and incident angle using a lookup-table approach based on Geant4/FLUKA data.
 4. **Interactive GUI**: A multi-page Tkinter interface (`main_app.py`) for slicing images, tuning detection thresholds, and previewing results.
 
