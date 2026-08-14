@@ -433,8 +433,8 @@ if __name__ == "__main__":
     energy_range = (0.01, 8.0, 0.01)  # [MeV] (start, stop, step)
 
     # --- File/folder settings ---
-    REL_file_folder = r"./dataset"
-    R0_file_folder  = r"./dataset"
+    REL_file_folder = r"\\wsl.localhost\Alma9\root\Documents\Geant4\MyG4App\output\CR39-dataset"
+    R0_file_folder  = r"\\wsl.localhost\Alma9\root\Documents\Geant4\MyG4App\output\CR39-dataset"
     REL_name_include = "eDep"
     R0_name_include  = "trackLen"
     
@@ -527,7 +527,7 @@ if __name__ == "__main__":
     # # For demonstration, a_exp and b_exp are set equal to size_exp (no noise)
     # a_exp = size_exp.copy()    # Major axis (um)
     # b_exp = size_exp.copy()    # Minor axis (um)
-    folderPath = r"./Results"
+    folderPath = r"C:\Users\weilin\Desktop\Webber\LAB\Analysis\Exps\2025-08\CR39\20250813\CR39det\Results"
     with open(os.path.join(folderPath, 'pit_size_vs_energy.sav'), 'rb') as f:
         data = pickle.load(f)
     E_exp = data['energy'][22:]  # Energy (MeV)
@@ -536,7 +536,7 @@ if __name__ == "__main__":
     a_std = data['a_std'][22:] * 1e6  # Standard deviation for major axis (um)
     b_std = data['b_std'][22:] * 1e6  # Standard deviation for minor axis (um)
 
-    VB = 1.68                  # Bulk etch rate (um/hr)
+    VB = 3.36                  # Bulk etch rate (um/hr)
     t = 0.5                      # Etching time (hr)
     h_exp = VB * t             # Bulk etch depth (um)
 

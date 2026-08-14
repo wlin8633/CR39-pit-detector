@@ -22,11 +22,23 @@ This repository contains a GPU-accelerated algorithm for analyzing CR-39 Solid-S
 4. **Interactive GUI**: A multi-page Tkinter interface (`main_app.py`) for slicing images, tuning detection thresholds, and previewing results.
 
 ## Setup & Requirements
-This project relies on NVIDIA GPUs for acceleration. 
-Ensure you have a CUDA 12.x compatible GPU and drivers installed.
+This project supports both **GPU acceleration (via CuPy)** and **CPU fallback (via NumPy)**. For optimal performance on high-resolution images, an NVIDIA GPU is highly recommended.
+
+**Recommended Environment:**
+We highly recommend using **Python 3.9.18** (or Python 3.9.x). This ensures numerical stability and compatibility with the required older NumPy versions (`numpy>=1.20.0, <2.0`).
+
+**CPU Fallback Mode (No GPU Required):**
+If you do not have an NVIDIA GPU or if CuPy is not installed, the application will automatically detect this and fall back to CPU execution. You can also manually disable GPU usage in the GUI by setting `Use CUDA = False`.
+
+**CUDA Version Configuration (For GPU Users):**
+By default, the `requirements.txt` installs `cupy-cuda12x` for CUDA 12.x. If you have a different CUDA version installed (e.g., CUDA 11.x), please open `requirements.txt` and change `cupy-cuda12x` to match your version (e.g., `cupy-cuda11x`), or install it manually:
 
 ```bash
+# If you changed the version in requirements.txt, just run:
 pip install -r requirements.txt
+
+# Or manually install your specific cupy version (e.g., CUDA 11.x):
+pip install cupy-cuda11x
 ```
 
 ## Running the Application

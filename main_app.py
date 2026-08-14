@@ -2,6 +2,9 @@
 import tkinter as tk
 from tkinter import ttk
 import numpy as np
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 from image_window import ImageDisplayWindow
 from gui_pages import PageSlicing, PageDetection
@@ -19,7 +22,7 @@ class PitDetectionNotebookApp:
         # ---------------------------------------------------------------------
         # Shared Data
         # ---------------------------------------------------------------------
-        self.AUTOSAVE_FILE = "./savFiles_pitDetection/autosave.sav"
+        self.AUTOSAVE_FILE = os.path.join(BASE_DIR, "savFiles_pitDetection", "autosave.sav")
         self.extended_img = None
         self.old_ext_img = None
         self.bbox_mode = tk.StringVar(value="Fraction")
@@ -29,7 +32,7 @@ class PitDetectionNotebookApp:
         self.y2_var = tk.StringVar(value="1.0")
 
         # For slicing
-        self.path_var = tk.StringVar(value=r"./example.bmp")
+        self.path_var = tk.StringVar(value=os.path.join(BASE_DIR, "example.bmp"))
         self.dw_var = tk.StringVar(value="2048")
         self.dh_var = tk.StringVar(value="1536")
         self.bdw_var = tk.StringVar(value="2048")
@@ -64,6 +67,7 @@ class PitDetectionNotebookApp:
         self.mfp_std_var = tk.StringVar(value="7")
         self.timeout_var = tk.StringVar(value="10")
         self.verbose_var = tk.StringVar(value="True")
+        self.use_cuda_var = tk.StringVar(value="True")
         
         # For display
         self.img_bgr = None

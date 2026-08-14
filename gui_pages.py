@@ -190,4 +190,8 @@ class PageDetection:
         ttk.Entry(self.frame, textvariable=self.app.verbose_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
         
         rowp += 1
+        ttk.Label(self.frame, text="use CUDA:").grid(row=rowp, column=0, sticky=tk.E)
+        ttk.Entry(self.frame, textvariable=self.app.use_cuda_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
+        
+        rowp += 1
         ttk.Button(self.frame, text="Detect Pits", command=self.logic.detect_pits).grid(row=rowp, column=3, padx=5, pady=5)

@@ -3,11 +3,9 @@ import os
 import shutil
 import time
 import numpy as np
-import cupy as cp
 import cv2
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize_scalar
-from cupyx.scipy.ndimage import gaussian_filter, maximum_filter, sobel
 
 def batch_least_squares_general(X, Y):
     """
@@ -64,7 +62,8 @@ class PitDetector:
                  mfp=None,
                  mfp_std=7,
                  timeout=60,
-                 verbose=True):
+                 verbose=True,
+                 use_cuda=True):
         """
         Initializes the PitDetector with configuration parameters.
         """
@@ -89,6 +88,31 @@ class PitDetector:
         self.mfp_std = mfp_std
         self.timeout = timeout
         self.verbose = verbose
+        
+        self.use_cuda = use_cuda
+        if self.use_cuda:
+            try:
+                import cupy as xp
+                from cupyx.scipy.ndimage import gaussian_filter as gf
+                from cupyx.scipy.ndimage import maximum_filter as mf
+                from cupyx.scipy.ndimage import sobel as sb
+                self.xp = xp
+                self.gaussian_filter = gf
+                self.maximum_filter = mf
+                self.sobel = sb
+            except ImportError:
+                print("CUDA (CuPy) is not available. Falling back to CPU (NumPy).")
+                self.use_cuda = False
+        
+        if not self.use_cuda:
+            import numpy as xp
+            from scipy.ndimage import gaussian_filter as gf
+            from scipy.ndimage import maximum_filter as mf
+            from scipy.ndimage import sobel as sb
+            self.xp = xp
+            self.gaussian_filter = gf
+            self.maximum_filter = mf
+            self.sobel = sb
 
     @staticmethod
     def slice_and_extend_img(image, desired_width, desired_height,
@@ -114,8 +138,8 @@ class PitDetector:
         height, width, _ = image.shape
 
         # Cupy usage to compute scale_x, scale_y
-        scale_x = cp.ceil(width / desired_width).item()
-        scale_y = cp.ceil(height / desired_height).item()
+        scale_x = np.ceil(width / desired_width).item()
+        scale_y = np.ceil(height / desired_height).item()
 
         # Resizing the image is still on CPU
         res_height = int(desired_height * scale_y)
@@ -176,26 +200,25 @@ class PitDetector:
         
         return image[y1:y2, x1:x2]
 
-    @staticmethod
-    def _otsu_from_hist(hist):
+    def _otsu_from_hist(self, hist):
         """
         Helper function that, given a 1D CuPy histogram array of length 256,
         computes the Otsu threshold index on the GPU, returning it as a CuPy scalar.
         """
         # Convert histogram to float and compute total counts
-        hist = hist.astype(cp.float32)
-        total = cp.sum(hist)
+        hist = hist.astype(self.xp.float32)
+        total = self.xp.sum(hist)
         
         # Avoid divide-by-zero if total=0
         if total <= 0:
-            return cp.float32(0)
+            return self.xp.float32(0)
 
         # Probability of each intensity
         p = hist / total
 
         # Cumulative sums
-        omega = cp.cumsum(p)  # cumulative probability
-        mu = cp.cumsum(p * cp.arange(256))  # cumulative mean
+        omega = self.xp.cumsum(p)  # cumulative probability
+        mu = self.xp.cumsum(p * self.xp.arange(256))  # cumulative mean
 
         # Global mean
         mu_t = mu[-1]
@@ -204,7 +227,7 @@ class PitDetector:
         sigma_b_squared = (mu_t * omega - mu) ** 2 / (omega * (1 - omega) + 1e-12)
 
         # Best threshold is the argmax of between-class variance
-        best_idx = cp.argmax(sigma_b_squared)
+        best_idx = self.xp.argmax(sigma_b_squared)
         return best_idx
 
     def _otsu_threshold(self, arr, batch=False):
@@ -213,18 +236,18 @@ class PitDetector:
         """
         if not batch:
             # --- Single threshold for entire array ---
-            hist, _ = cp.histogram(arr, bins=256, range=(0, 255))
+            hist, _ = self.xp.histogram(arr, bins=256, range=(0, 255))
             return self._otsu_from_hist(hist)
         else:
             # --- Batch mode: arr is shape (N, ...), compute one threshold per sub-array (0th axis) ---
             N = arr.shape[0]
             arr_flat = arr.reshape((N, -1))
-            histograms = cp.apply_along_axis(
-                lambda x: cp.histogram(x, bins=256, range=(0, 255))[0],
+            histograms = self.xp.apply_along_axis(
+                lambda x: self.xp.histogram(x, bins=256, range=(0, 255))[0],
                 axis=1,
                 arr=arr_flat
             )
-            thresholds = cp.zeros(N, dtype=cp.float32)
+            thresholds = self.xp.zeros(N, dtype=self.xp.float32)
             for i in range(N):
                 h = histograms[i]
                 best_idx = self._otsu_from_hist(h)
@@ -236,9 +259,9 @@ class PitDetector:
         Thresholds the gradient magnitude mask for Hough lines.
         """
         mask_min, mask_max = mask.min(), mask.max()
-        norm_mask = ((mask - mask_min) * 255.0 / (mask_max - mask_min)).astype(cp.uint8)
-        threshold = cp.percentile(norm_mask, thre_precent)
-        thre_mask = cp.zeros_like(norm_mask)
+        norm_mask = ((mask - mask_min) * 255.0 / (mask_max - mask_min)).astype(self.xp.uint8)
+        threshold = self.xp.percentile(norm_mask, thre_precent)
+        thre_mask = self.xp.zeros_like(norm_mask)
         thre_mask[norm_mask >= threshold] = 255
 
         if self.verbose:
@@ -246,13 +269,15 @@ class PitDetector:
         
         return thre_mask
 
-    def _padding(self, image, pad_rate_x, pad_rate_y, dtype=cp.uint8):
+    def _padding(self, image, pad_rate_x, pad_rate_y, dtype=None):
         """
         Pads the image with specified rates.
         """
+        if dtype is None:
+            dtype = self.xp.uint8
         pad_h = int(image.shape[0] * pad_rate_y)
         pad_w = int(image.shape[1] * pad_rate_x)
-        extended_image = cp.zeros((pad_h, pad_w), dtype=dtype)
+        extended_image = self.xp.zeros((pad_h, pad_w), dtype=dtype)
         start_y = int((pad_rate_y - 1)/2 * image.shape[0])
         start_x = int((pad_rate_x - 1)/2 * image.shape[1])
         extended_image[start_y:start_y+image.shape[0], start_x:start_x+image.shape[1]] = image
@@ -262,22 +287,24 @@ class PitDetector:
         
         return extended_image, start_x, start_y
 
-    def _parallel_bresenham(self, mask_shape, points, dx, dy, dtype=cp.uint16):
+    def _parallel_bresenham(self, mask_shape, points, dx, dy, dtype=None):
         """
         Draws lines using Bresenham's algorithm in parallel on the GPU.
         """
-        mask = cp.zeros(mask_shape, dtype=dtype)
+        if dtype is None:
+            dtype = self.xp.uint16
+        mask = self.xp.zeros(mask_shape, dtype=dtype)
         x0, y0 = points[:, 1], points[:, 0]
         x1_, y1_ = x0 + dx, y0 + dy
 
-        ddx, ddy = cp.abs(x1_ - x0), cp.abs(y1_ - y0)
-        sx = cp.where(x0 < x1_, 1, -1)
-        sy = cp.where(y0 < y1_, 1, -1)
+        ddx, ddy = self.xp.abs(x1_ - x0), self.xp.abs(y1_ - y0)
+        sx = self.xp.where(x0 < x1_, 1, -1)
+        sy = self.xp.where(y0 < y1_, 1, -1)
         err = ddx - ddy
 
-        max_steps = int(cp.maximum(ddx, ddy).max().item())
-        x_coords = cp.zeros((len(x0), max_steps + 1), dtype=cp.int32)
-        y_coords = cp.zeros((len(x0), max_steps + 1), dtype=cp.int32)
+        max_steps = int(self.xp.maximum(ddx, ddy).max().item())
+        x_coords = self.xp.zeros((len(x0), max_steps + 1), dtype=self.xp.int32)
+        y_coords = self.xp.zeros((len(x0), max_steps + 1), dtype=self.xp.int32)
         x_coords[:, 0], y_coords[:, 0] = x0, y0
 
         step = 0
@@ -285,12 +312,12 @@ class PitDetector:
             if step >= max_steps: break
             valid_mask = (y_coords[:, step] >= 0) & (y_coords[:, step] < mask.shape[0]) & \
                          (x_coords[:, step] >= 0) & (x_coords[:, step] < mask.shape[1])
-            if not cp.any(valid_mask): break
+            if not self.xp.any(valid_mask): break
             e2 = 2 * err
-            x_step = cp.where((e2 > -ddy) & valid_mask, sx, 0)
-            y_step = cp.where((e2 < ddx) & valid_mask, sy, 0)
-            err = cp.where((e2 > -ddy) & valid_mask, err - ddy, err)
-            err = cp.where((e2 < ddx) & valid_mask, err + ddx, err)
+            x_step = self.xp.where((e2 > -ddy) & valid_mask, sx, 0)
+            y_step = self.xp.where((e2 < ddx) & valid_mask, sy, 0)
+            err = self.xp.where((e2 > -ddy) & valid_mask, err - ddy, err)
+            err = self.xp.where((e2 < ddx) & valid_mask, err + ddx, err)
 
             x_coords[:, step+1] = x_coords[:, step] + x_step
             y_coords[:, step+1] = y_coords[:, step] + y_step
@@ -298,7 +325,7 @@ class PitDetector:
 
         valid_coords = (y_coords >= 0) & (y_coords < mask.shape[0]) & \
                        (x_coords >= 0) & (x_coords < mask.shape[1])
-        cp.add.at(mask, (y_coords[valid_coords], x_coords[valid_coords]), 1)
+        self.xp.add.at(mask, (y_coords[valid_coords], x_coords[valid_coords]), 1)
         
         if self.verbose:
             print(f"Parallel Bresenham completed with {step} steps.")
@@ -309,54 +336,58 @@ class PitDetector:
         """
         Find the overlapping peaks within a distance.
         """
-        sq_norms = cp.sum(peaks * peaks, axis=1, keepdims=True)
+        sq_norms = self.xp.sum(peaks * peaks, axis=1, keepdims=True)
         dist_sq = sq_norms - 2 * peaks @ peaks.T + sq_norms.T
-        dist_sq = cp.maximum(dist_sq, 0)
-        D = cp.sqrt(dist_sq)
-        D = cp.triu(D)
+        dist_sq = self.xp.maximum(dist_sq, 0)
+        D = self.xp.sqrt(dist_sq)
+        D = self.xp.triu(D)
         
         if self.verbose:
             print(f"Distance matrix shape: {D.shape}")
         
-        return cp.argwhere((D <= distance) & (D > 0))
+        return self.xp.argwhere((D <= distance) & (D > 0))
 
-    @staticmethod
-    def _pit_separation_line(pts):
+    def _pit_separation_line(self, pts):
         """
         Calculate separation line for overlapping pits.
         """
         center = pts.mean(axis=1)
-        slope = (pts[:,1,1] - pts[:,0,1]) / (pts[:,1,0] - pts[:,0,0])
-        sep_m = -1.0 / slope
+        with np.errstate(divide='ignore', invalid='ignore'):
+            slope = (pts[:,1,1] - pts[:,0,1]) / (pts[:,1,0] - pts[:,0,0])
+            sep_m = -1.0 / slope
         sep_b = center[:,1] - sep_m * center[:,0]
-        sep_b = cp.where(cp.isinf(sep_m), center[:,0], sep_b)
-        return cp.column_stack((sep_m, sep_b))
+        sep_b = self.xp.where(self.xp.isinf(sep_m), center[:,0], sep_b)
+        return self.xp.column_stack((sep_m, sep_b))
 
-    @staticmethod
-    def _filter_out_overlap_region_and_cal_product(sobelx, sobely, xx, yy, peaks, overlap_peaks, max_radius_px, peak_pairs, seg_m, seg_b):
+    def _filter_out_overlap_region_and_cal_product(self, sobelx, sobely, xx, yy, peaks, overlap_peaks, max_radius_px, peak_pairs, seg_m, seg_b):
         """
         Filter out overlap regions and calculate dot product for ellipse fitting.
         """
-        norm_dir = cp.arctan2(yy - peaks[:, 1, None, None], xx - peaks[:, 0, None, None])
-        norm_dir_x, norm_dir_y = cp.cos(norm_dir), cp.sin(norm_dir)
-        norm = cp.sqrt(norm_dir_x**2 + norm_dir_y**2)
-        norm = cp.where(cp.sqrt((xx - peaks[:, 0, None, None])**2 + (yy - peaks[:, 1, None, None])**2) <= max_radius_px, norm, cp.inf)
+        norm_dir = self.xp.arctan2(yy - peaks[:, 1, None, None], xx - peaks[:, 0, None, None])
+        norm_dir_x, norm_dir_y = self.xp.cos(norm_dir), self.xp.sin(norm_dir)
+        norm = self.xp.sqrt(norm_dir_x**2 + norm_dir_y**2)
+        norm = self.xp.where(self.xp.sqrt((xx - peaks[:, 0, None, None])**2 + (yy - peaks[:, 1, None, None])**2) <= max_radius_px, norm, self.xp.inf)
         det = (peak_pairs[:, :, 1].T - seg_m.T[0] * peak_pairs[:, :, 0].T - seg_b.T[0]).T
         
         for i in range(len(overlap_peaks)):
-            if cp.isinf(det[i, 0]):
-                norm[overlap_peaks[i, 0]] = cp.where((xx[overlap_peaks[i, 0]] - seg_b[i, 0]) < 0, norm[overlap_peaks[i, 0]], cp.inf)
-                norm[overlap_peaks[i, 1]] = cp.where((xx[overlap_peaks[i, 1]] - seg_b[i, 1]) > 0, norm[overlap_peaks[i, 1]], cp.inf)
+            if self.xp.isinf(det[i, 0]):
+                norm[overlap_peaks[i, 0]] = self.xp.where((xx[overlap_peaks[i, 0]] - seg_b[i, 0]) < 0, norm[overlap_peaks[i, 0]], self.xp.inf)
+                norm[overlap_peaks[i, 1]] = self.xp.where((xx[overlap_peaks[i, 1]] - seg_b[i, 1]) > 0, norm[overlap_peaks[i, 1]], self.xp.inf)
             elif det[i, 0] > 0:
-                norm[overlap_peaks[i, 0]] = cp.where((yy[overlap_peaks[i, 0]] - seg_m[i, 0] * xx[overlap_peaks[i, 0]] - seg_b[i, 0]) > 0, norm[overlap_peaks[i, 0]], cp.inf)
-                norm[overlap_peaks[i, 1]] = cp.where((yy[overlap_peaks[i, 1]] - seg_m[i, 1] * xx[overlap_peaks[i, 1]] - seg_b[i, 1]) < 0, norm[overlap_peaks[i, 1]], cp.inf)
+                norm[overlap_peaks[i, 0]] = self.xp.where((yy[overlap_peaks[i, 0]] - seg_m[i, 0] * xx[overlap_peaks[i, 0]] - seg_b[i, 0]) > 0, norm[overlap_peaks[i, 0]], self.xp.inf)
+                norm[overlap_peaks[i, 1]] = self.xp.where((yy[overlap_peaks[i, 1]] - seg_m[i, 1] * xx[overlap_peaks[i, 1]] - seg_b[i, 1]) < 0, norm[overlap_peaks[i, 1]], self.xp.inf)
             else:
-                norm[overlap_peaks[i, 0]] = cp.where((yy[overlap_peaks[i, 0]] - seg_m[i, 1] * xx[overlap_peaks[i, 0]] - seg_b[i, 1]) < 0, norm[overlap_peaks[i, 0]], cp.inf)
-                norm[overlap_peaks[i, 1]] = cp.where((yy[overlap_peaks[i, 1]] - seg_m[i, 0] * xx[overlap_peaks[i, 1]] - seg_b[i, 0]) > 0, norm[overlap_peaks[i, 1]], cp.inf)
+                norm[overlap_peaks[i, 0]] = self.xp.where((yy[overlap_peaks[i, 0]] - seg_m[i, 1] * xx[overlap_peaks[i, 0]] - seg_b[i, 1]) < 0, norm[overlap_peaks[i, 0]], self.xp.inf)
+                norm[overlap_peaks[i, 1]] = self.xp.where((yy[overlap_peaks[i, 1]] - seg_m[i, 0] * xx[overlap_peaks[i, 1]] - seg_b[i, 0]) > 0, norm[overlap_peaks[i, 1]], self.xp.inf)
 
         norm_dir_x /= norm
         norm_dir_y /= norm
-        return sobelx[yy, xx] * norm_dir_x + sobely[yy, xx] * norm_dir_y
+        
+        H, W = sobelx.shape
+        yy_clipped = self.xp.clip(yy, 0, H - 1)
+        xx_clipped = self.xp.clip(xx, 0, W - 1)
+        
+        return sobelx[yy_clipped, xx_clipped] * norm_dir_x + sobely[yy_clipped, xx_clipped] * norm_dir_y
 
     def _fit_ovals(self, peaks, product_thre, xx, yy):
         """
@@ -464,7 +495,7 @@ class PitDetector:
         else:
             label[valid_idx] = 0
         fitted_ovals = np.column_stack([center_x, center_y, a_val, b_val, theta_val, label])
-        return cp.asarray(fitted_ovals)
+        return self.xp.asarray(fitted_ovals)
 
     def _radii_mask_based_on_bg_value(self, gpu_gray, bg_value):
         """
@@ -479,21 +510,21 @@ class PitDetector:
         """
         Connects edges in the radii mask.
         """
-        edge_connected = cp.zeros_like(det_rad, dtype=cp.uint8)
+        edge_connected = self.xp.zeros_like(det_rad, dtype=self.xp.uint8)
         edge_connected[0,:], edge_connected[-1,:], edge_connected[:,0], edge_connected[:,-1] = \
             det_rad[0,:], det_rad[-1,:], det_rad[:,0], det_rad[:,-1]
 
         loop_start = time.time()
         print("Start edge connection...")
         while True:
-            dilated = cp.roll(edge_connected,1,0)|cp.roll(edge_connected,-1,0)| \
-                      cp.roll(edge_connected,1,1)|cp.roll(edge_connected,-1,1)
+            dilated = self.xp.roll(edge_connected,1,0)|self.xp.roll(edge_connected,-1,0)| \
+                      self.xp.roll(edge_connected,1,1)|self.xp.roll(edge_connected,-1,1)
             dilated &= det_rad
             
             if self.verbose:
                 print(f"\rTime elapsed: {time.time() - loop_start:.2f} s", end="")
             
-            if cp.array_equal(dilated, edge_connected) or (time.time() - loop_start) > self.timeout:
+            if self.xp.array_equal(dilated, edge_connected) or (time.time() - loop_start) > self.timeout:
                 if (time.time() - loop_start) > self.timeout:
                     print(f"\nTimeout reached. Unable to complete edge connection.")
                 break
@@ -506,56 +537,56 @@ class PitDetector:
         """
         Fit circles to detected regions of interest.
         """
-        int_radii = cp.zeros((len(peaks), charac_len_px))
+        int_radii = self.xp.zeros((len(peaks), charac_len_px))
         for r in range(1, charac_len_px + 1):
             ring_mask = (dist_sq_template <= r**2) & (dist_sq_template > (r-1)**2)
-            int_radii[:, r-1] = cp.sum(det_rad_ROIs[:, ring_mask], axis=1) / (2 * cp.pi * r)
+            int_radii[:, r-1] = self.xp.sum(det_rad_ROIs[:, ring_mask], axis=1) / (2 * self.xp.pi * r)
 
-        min_indices = cp.argmax(cp.where(int_radii == cp.min(int_radii, axis=1)[:,None], cp.arange(charac_len_px), -1), axis=1)
-        radii = cp.where((min_indices >= min_r) & (min_indices <= max_r), min_indices, np.nan)
+        min_indices = self.xp.argmax(self.xp.where(int_radii == self.xp.min(int_radii, axis=1)[:,None], self.xp.arange(charac_len_px), -1), axis=1)
+        radii = self.xp.where((min_indices >= min_r) & (min_indices <= max_r), min_indices, np.nan)
         
         if self.verbose:
             print(f"Number of detected peaks: {len(peaks)}")
-            print(f"Number of detected pits: {cp.sum(~cp.isnan(radii))}")
-            print(f"{cp.sum(cp.isnan(radii))} peaks are removed due to the radius range.")
+            print(f"Number of detected pits: {self.xp.sum(~self.xp.isnan(radii))}")
+            print(f"{self.xp.sum(self.xp.isnan(radii))} peaks are removed due to the radius range.")
         
-        peaks_shifted = cp.column_stack((peaks[:, 0] + x1, peaks[:, 1] + y1))
-        fitted_circles = cp.array([peaks_shifted[:, 0], peaks_shifted[:, 1], radii, radii, cp.zeros(len(peaks)), cp.zeros(len(peaks))]).T
-        fitted_circles[:, 5] = cp.where(cp.isnan(fitted_circles[:, 2]), -1, fitted_circles[:, 5])
+        peaks_shifted = self.xp.column_stack((peaks[:, 0] + x1, peaks[:, 1] + y1))
+        fitted_circles = self.xp.array([peaks_shifted[:, 0], peaks_shifted[:, 1], radii, radii, self.xp.zeros(len(peaks)), self.xp.zeros(len(peaks))]).T
+        fitted_circles[:, 5] = self.xp.where(self.xp.isnan(fitted_circles[:, 2]), -1, fitted_circles[:, 5])
         return fitted_circles
 
     def _ellipse_radii_detection(self, peaks, sobelx, sobely):
         """
         Radii detection for ellipse mode.
         """
-        max_radius_px = int(cp.ceil(self.eps_charac_len / self.pixel_size).item())
-        yy, xx = cp.meshgrid(cp.arange(-max_radius_px, max_radius_px+1), cp.arange(-max_radius_px, max_radius_px+1), indexing='ij')
+        max_radius_px = int(np.ceil(self.eps_charac_len / self.pixel_size).item())
+        yy, xx = self.xp.meshgrid(self.xp.arange(-max_radius_px, max_radius_px+1), self.xp.arange(-max_radius_px, max_radius_px+1), indexing='ij')
         yy, xx = yy + peaks[:, 1, None, None], xx + peaks[:, 0, None, None]
         
         overlap_peaks = self._find_overlap_peaks(peaks, 2 * max_radius_px)
         peak_pairs = peaks[overlap_peaks]
         lines = self._pit_separation_line(peak_pairs)
-        seg_m = cp.column_stack([lines[:, 0], lines[:, 0]])
-        seg_b = cp.column_stack([lines[:, 1], lines[:, 1]])
+        seg_m = self.xp.column_stack([lines[:, 0], lines[:, 0]])
+        seg_b = self.xp.column_stack([lines[:, 1], lines[:, 1]])
         
         product = self._filter_out_overlap_region_and_cal_product(sobelx, sobely, xx, yy, peaks, overlap_peaks, max_radius_px, peak_pairs, seg_m, seg_b)
         
         thre_otsu = self._otsu_threshold(product, batch=True)
-        product_thre_precent = 100 - cp.sum(product > thre_otsu[:, None, None], axis=(1,2)) / (product.shape[1]*product.shape[2]) * 100 + self.eps_product_thre_offset
-        product_thre_precent = cp.clip(product_thre_precent, 0, 100)
-        thre_vals = cp.diag(cp.percentile(product, product_thre_precent, axis=(1,2)))
+        product_thre_precent = 100 - self.xp.sum(product > thre_otsu[:, None, None], axis=(1,2)) / (product.shape[1]*product.shape[2]) * 100 + self.eps_product_thre_offset
+        product_thre_precent = self.xp.clip(product_thre_precent, 0, 100)
+        thre_vals = self.xp.diag(self.xp.percentile(product, product_thre_precent, axis=(1,2)))
         product_thre = product > thre_vals[:, None, None]
         
         fitted_ovals = self._fit_ovals(peaks, product_thre, xx, yy)
         
         if self.verbose:
-            print(f"Number of detected pits: {cp.sum(fitted_ovals[:, 5] == 0)}")
+            print(f"Number of detected pits: {self.xp.sum(fitted_ovals[:, 5] == 0)}")
         
         min_r, max_r = self.radius_range[0]/self.pixel_size, self.radius_range[1]/self.pixel_size
         cond_invalid = ((fitted_ovals[:,2]<=min_r) | (fitted_ovals[:,2]>=max_r) | \
                         (fitted_ovals[:,3]<=min_r) | (fitted_ovals[:,3]>=max_r)) & \
                         (fitted_ovals[:,5]==0)
-        fitted_ovals[:,5] = cp.where(cond_invalid, -4, fitted_ovals[:,5])
+        fitted_ovals[:,5] = self.xp.where(cond_invalid, -4, fitted_ovals[:,5])
         
         return fitted_ovals
 
@@ -563,26 +594,26 @@ class PitDetector:
         """
         Radii detection for circle mode.
         """
-        min_r, max_r = int(cp.ceil(self.radius_range[0] / self.pixel_size)), int(cp.floor(self.radius_range[1] / self.pixel_size))
-        charac_len_px = int(cp.ceil(self.eps_charac_len / self.pixel_size))
+        min_r, max_r = int(np.ceil(self.radius_range[0] / self.pixel_size)), int(self.xp.floor(self.radius_range[1] / self.pixel_size))
+        charac_len_px = int(np.ceil(self.eps_charac_len / self.pixel_size))
         peakx, peaky = peaks.get().T
 
         ROI_x0, ROI_y0 = peakx - charac_len_px, peaky - charac_len_px
         ROI_x1, ROI_y1 = peakx + charac_len_px, peaky + charac_len_px
 
-        padx0, pady0 = cp.maximum(0, -cp.asarray(ROI_x0)), cp.maximum(0, -cp.asarray(ROI_y0))
-        padx1, pady1 = cp.maximum(0, cp.asarray(ROI_x1) - gpu_gray.shape[1]), cp.maximum(0, cp.asarray(ROI_y1) - gpu_gray.shape[0])
+        padx0, pady0 = self.xp.maximum(0, -self.xp.asarray(ROI_x0)), self.xp.maximum(0, -self.xp.asarray(ROI_y0))
+        padx1, pady1 = self.xp.maximum(0, self.xp.asarray(ROI_x1) - gpu_gray.shape[1]), self.xp.maximum(0, self.xp.asarray(ROI_y1) - gpu_gray.shape[0])
 
-        ROI_x0, ROI_y0 = cp.clip(ROI_x0, 0, gpu_gray.shape[1]), cp.clip(ROI_y0, 0, gpu_gray.shape[0])
-        ROI_x1, ROI_y1 = cp.clip(ROI_x1, 0, gpu_gray.shape[1]), cp.clip(ROI_y1, 0, gpu_gray.shape[0])
+        ROI_x0, ROI_y0 = self.xp.clip(ROI_x0, 0, gpu_gray.shape[1]), self.xp.clip(ROI_y0, 0, gpu_gray.shape[0])
+        ROI_x1, ROI_y1 = self.xp.clip(ROI_x1, 0, gpu_gray.shape[1]), self.xp.clip(ROI_y1, 0, gpu_gray.shape[0])
         
         det_rad = self._radii_mask_based_on_bg_value(gpu_gray, bg_value)
         det_rad = self._edge_connection(det_rad)
         
-        ROI_x, ROI_y = cp.mgrid[0:2*charac_len_px, 0:2*charac_len_px]
+        ROI_x, ROI_y = self.xp.mgrid[0:2*charac_len_px, 0:2*charac_len_px]
         dist_sq_template = (ROI_x-charac_len_px)**2 + (ROI_y-charac_len_px)**2
 
-        det_rad_ROIs = cp.zeros((len(peaks), 2*charac_len_px, 2*charac_len_px))
+        det_rad_ROIs = self.xp.zeros((len(peaks), 2*charac_len_px, 2*charac_len_px))
         if self.verbose:
             print(f"{len(peaks)} ROIs created with size {2*charac_len_px}x{2*charac_len_px}. Processing...")
 
@@ -599,7 +630,7 @@ class PitDetector:
             print("Please specify a valid mode: 'ellipse' or 'circle'")
             return None, None
 
-        gpu_gray = cp.mean(cp.asarray(img_bgr), axis=2).astype(cp.uint8) if img_bgr.ndim == 3 else cp.asarray(img_bgr).astype(cp.uint8)
+        gpu_gray = self.xp.mean(self.xp.asarray(img_bgr), axis=2).astype(self.xp.uint8) if img_bgr.ndim == 3 else self.xp.asarray(img_bgr).astype(self.xp.uint8)
 
         if bbox is None:
             if self.verbose: print("No bounding box. Using entire image.")
@@ -608,42 +639,42 @@ class PitDetector:
         
         bg_value = self.bg_value
         if bg_value is None:
-            unique, counts = cp.unique(cropped_image, return_counts=True)
-            bg_value = unique[cp.argmax(counts)]
+            unique, counts = self.xp.unique(cropped_image, return_counts=True)
+            bg_value = unique[self.xp.argmax(counts)]
             if self.verbose: print(f"Detected background value: {bg_value}")
 
         if self.clips_to_bg:
-            cropped_image = cp.where(cropped_image > bg_value, bg_value, cropped_image)
+            cropped_image = self.xp.where(cropped_image > bg_value, bg_value, cropped_image)
 
-        sobelx = sobel(cropped_image.astype(cp.float64), axis=1, mode='constant', cval=0.0)
-        sobely = sobel(cropped_image.astype(cp.float64), axis=0, mode='constant', cval=0.0)
-        edge_mask = cp.ones_like(cropped_image); edge_mask[1:-1, 1:-1] = 0
+        sobelx = self.sobel(cropped_image.astype(self.xp.float64), axis=1, mode='constant', cval=0.0)
+        sobely = self.sobel(cropped_image.astype(self.xp.float64), axis=0, mode='constant', cval=0.0)
+        edge_mask = self.xp.ones_like(cropped_image); edge_mask[1:-1, 1:-1] = 0
         sobelx[edge_mask == 1], sobely[edge_mask == 1] = 0, 0
-        magnitude = cp.sqrt(sobelx**2 + sobely**2)
+        magnitude = self.xp.sqrt(sobelx**2 + sobely**2)
         
         otsu = self._otsu_threshold(cropped_image, batch=False)
-        thre_precent = 100 - cp.sum(cropped_image < otsu) / cp.multiply(*cropped_image.shape) * 100 - self.peak_thre_offset
-        contour_image = self._mask_for_hough_lines(magnitude, cp.clip(thre_precent, 0, 100))
+        thre_precent = 100 - self.xp.sum(cropped_image < otsu) / self.xp.multiply(*cropped_image.shape) * 100 - self.peak_thre_offset
+        contour_image = self._mask_for_hough_lines(magnitude, self.xp.clip(thre_precent, 0, 100))
 
-        extended_contour, start_x, start_y = self._padding(contour_image, self.peak_pad_rate, self.peak_pad_rate, dtype=cp.uint16)
-        extended_angle, _, _ = self._padding(cp.arctan2(sobely, sobelx) + cp.pi, self.peak_pad_rate, self.peak_pad_rate, dtype=cp.float32)
+        extended_contour, start_x, start_y = self._padding(contour_image, self.peak_pad_rate, self.peak_pad_rate, dtype=self.xp.uint16)
+        extended_angle, _, _ = self._padding(self.xp.arctan2(sobely, sobelx) + self.xp.pi, self.peak_pad_rate, self.peak_pad_rate, dtype=self.xp.float32)
         
-        edge_points = cp.argwhere(extended_contour > 0)
+        edge_points = self.xp.argwhere(extended_contour > 0)
         angles = extended_angle[edge_points[:, 0], edge_points[:, 1]]
         extension_length = self.peak_charac_len / self.pixel_size
         if self.verbose: print(f"Extension length: {int(extension_length)} px")
-        dx, dy = (extension_length * cp.cos(angles)).astype(cp.int32), (extension_length * cp.sin(angles)).astype(cp.int32)
-        extended_edges = self._parallel_bresenham(extended_contour.shape, edge_points, dx, dy, dtype=cp.float32)
+        dx, dy = (extension_length * self.xp.cos(angles)).astype(self.xp.int32), (extension_length * self.xp.sin(angles)).astype(self.xp.int32)
+        extended_edges = self._parallel_bresenham(extended_contour.shape, edge_points, dx, dy, dtype=self.xp.float32)
 
-        smoothed_edges = gaussian_filter(extended_edges, sigma=self.peak_gaussian_sigma)
-        local_max = maximum_filter(smoothed_edges, size=int(self.peak_closest_dist/self.pixel_size))
+        smoothed_edges = self.gaussian_filter(extended_edges, sigma=self.peak_gaussian_sigma)
+        local_max = self.maximum_filter(smoothed_edges, size=int(self.peak_closest_dist/self.pixel_size))
         peaks_mask = (smoothed_edges == local_max) & (extended_edges > 0)
-        extended_peaks = cp.argwhere(peaks_mask)
+        extended_peaks = self.xp.argwhere(peaks_mask)
         if self.verbose: print(f"Detected peaks before filtering: {len(extended_peaks)}")
         
         edge_thre = smoothed_edges.mean() + self.peak_edge_std * smoothed_edges.std()
         extended_peaks = extended_peaks[smoothed_edges[extended_peaks[:, 0], extended_peaks[:, 1]] > edge_thre]
-        peaks = cp.column_stack((extended_peaks[:, 1] - start_x, extended_peaks[:, 0] - start_y))
+        peaks = self.xp.column_stack((extended_peaks[:, 1] - start_x, extended_peaks[:, 0] - start_y))
         if self.verbose:
             print(f"Peak detection threshold: {float(edge_thre):.2f}")
             print(f"Number of detected peaks: {len(peaks)}")
@@ -661,7 +692,7 @@ class PitDetector:
             if self.verbose: print(f"Performing MFP-based filtering...")
             good_mask = (fitted_ovals[:,5] == 0)
             good_peaks = peaks[good_mask]
-            peak_density = cp.zeros_like(gpu_gray, dtype=cp.float32)
+            peak_density = self.xp.zeros_like(gpu_gray, dtype=self.xp.float32)
             for pk in good_peaks:
                 px, py = int(pk[0].item()), int(pk[1].item())
                 if 0 <= px < peak_density.shape[1] and 0 <= py < peak_density.shape[0]:
@@ -670,29 +701,29 @@ class PitDetector:
             mfp = self.mfp
             if mfp is None:
                 eff_num = len(good_peaks)
-                size_of_domain = cp.sqrt(cp.prod(cp.array(gpu_gray.shape))) * self.pixel_size
-                mfp = size_of_domain / cp.sqrt(eff_num) if eff_num > 0 else 0
+                size_of_domain = self.xp.sqrt(self.xp.prod(self.xp.array(gpu_gray.shape))) * self.pixel_size
+                mfp = size_of_domain / self.xp.sqrt(eff_num) if eff_num > 0 else 0
                 if self.verbose: print(f"Auto-calculated MFP: {mfp:.2e} m")
 
             peak_density_thre_sigma = int(mfp/self.pixel_size) if self.pixel_size > 0 else 0
             if peak_density_thre_sigma > 0:
-                smoothed_density = gaussian_filter(peak_density, sigma=peak_density_thre_sigma)
+                smoothed_density = self.gaussian_filter(peak_density, sigma=peak_density_thre_sigma)
                 dense_regions = smoothed_density > (smoothed_density.mean() + self.mfp_std*smoothed_density.std())
                 for i, pk in enumerate(good_peaks):
                     px, py = int(pk[0].item()), int(pk[1].item())
                     if 0 <= px < dense_regions.shape[1] and 0 <= py < dense_regions.shape[0] and dense_regions[py, px]:
-                        global_idx = cp.argwhere(good_mask).ravel()[i]
+                        global_idx = self.xp.argwhere(good_mask).ravel()[i]
                         fitted_ovals[global_idx, 5] = -2
 
         if self.verbose:
-            n_valid = cp.sum(fitted_ovals[:,5]==0)
+            n_valid = self.xp.sum(fitted_ovals[:,5]==0)
             print(f"Total peaks: {len(peaks)}, valid pits: {int(n_valid.item())}")
 
         return peaks, fitted_ovals
 
 if __name__ == "__main__":
     # Example usage with your existing data
-    rawimage_name = r".\example.bmp"
+    rawimage_name = os.path.join(os.path.dirname(os.path.abspath(__file__)), "example.bmp")
     
     desired_width = 2048
     desired_height = 1536
@@ -706,8 +737,8 @@ if __name__ == "__main__":
     
     # Load and preprocess the image
     rawimage = cv2.imread(rawimage_name)
-    sliced_image_dir  = r".\savFiles_pitDetection\sliced_images"
-    extend_image_dir  = r".\savFiles_pitDetection\extended_images"
+    sliced_image_dir  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "savFiles_pitDetection", "sliced_images")
+    extend_image_dir  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "savFiles_pitDetection", "extended_images")
     
     PitDetector.slice_and_extend_img(rawimage,
                                      desired_width, desired_height,
@@ -755,8 +786,8 @@ if __name__ == "__main__":
     # %% Display final result
     display_peaks_only = False
     if peaks is not None and fitted_ovals is not None:
-        peaks_np = cp.asnumpy(peaks)
-        fitted_ovals_np = cp.asnumpy(fitted_ovals)
+        peaks_np = self.xp.asnumpy(peaks)
+        fitted_ovals_np = self.xp.asnumpy(fitted_ovals)
         overlay_img = img_cv2.copy()
 
         circle_size = max(1, int(1.5 * extended_rate * 0.128e-6 / objective_resolution))
@@ -842,8 +873,8 @@ if __name__ == "__main__":
     # %% Display final result
     display_peaks_only = False
     if peaks is not None and fitted_ovals is not None and uniq_lookup is not None:
-        peaks_np = cp.asnumpy(peaks)
-        fitted_ovals_np = cp.asnumpy(fitted_ovals)
+        peaks_np = self.xp.asnumpy(peaks)
+        fitted_ovals_np = self.xp.asnumpy(fitted_ovals)
         overlay_img = img_cv2.copy()
 
         circle_size = max(1, int(1.5 * extended_rate * 0.128e-6 / objective_resolution))

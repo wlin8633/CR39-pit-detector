@@ -9,6 +9,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 
 matplotlib.use("TkAgg")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
@@ -179,13 +180,13 @@ class AppLogic:
                 self.app.bdh_var.set(str(dh))
             
             scale_x, scale_y = PitDetector.slice_and_extend_img(
-                raw_img, dw, dh, True, r".\savFiles_pitDetection\sliced_images", r".\savFiles_pitDetection\extended_images", er
+                raw_img, dw, dh, True, os.path.join(BASE_DIR, "savFiles_pitDetection", "sliced_images"), os.path.join(BASE_DIR, "savFiles_pitDetection", "extended_images"), er
             )
             
             self.app.scale_var.set(f"Scale: h{int(scale_y)}, w{int(scale_x)}")
             
             # Load extended slice
-            extended_path = fr".\savFiles_pitDetection\extended_images\{sh}_{sw}.bmp"
+            extended_path = os.path.join(BASE_DIR, "savFiles_pitDetection", "extended_images", f"{sh}_{sw}.bmp")
             ext_img = cv2.imread(extended_path)
             if ext_img is None:
                 print("Could not load extended slice:", extended_path)
@@ -245,7 +246,7 @@ class AppLogic:
         
         for i in range(bsh):
             for j in range(bsw):
-                extended_path = fr".\savFiles_pitDetection\extended_images\{i}_{j}.bmp"
+                extended_path = os.path.join(BASE_DIR, "savFiles_pitDetection", "extended_images", f"{i}_{j}.bmp")
                 ext_img = cv2.imread(extended_path)
                 
                 if ext_img is None:
@@ -356,6 +357,7 @@ class AppLogic:
         mfp_std = float(self.app.mfp_std_var.get())
         detection_timeout = float(self.app.timeout_var.get())
         verbose = self.app.verbose_var.get() == "True"
+        use_cuda = self.app.use_cuda_var.get() == "True"
 
         img_bgr = self.app.extended_img.copy()
 
@@ -384,6 +386,7 @@ class AppLogic:
             mfp_std=mfp_std,
             timeout=detection_timeout,
             verbose=verbose,
+            use_cuda=use_cuda,
         )
         
         # Run detection
@@ -396,9 +399,9 @@ class AppLogic:
 
         self.log(f"Detection time: {dt:.3f}s\nFound {len(peaks)} peaks, {len(fitted_ovals[:, 5] == 0)} ovals\n")
         
-        # Save the results
-        self.app.peaks = peaks.copy()
-        self.app.ovals = fitted_ovals.copy()
+        # Save the results (ensure they are numpy arrays for compatibility with np.append etc.)
+        self.app.peaks = peaks.get() if hasattr(peaks, 'get') else peaks.copy()
+        self.app.ovals = fitted_ovals.get() if hasattr(fitted_ovals, 'get') else fitted_ovals.copy()
         
         # Display the results
         if display:
@@ -520,7 +523,7 @@ class AppLogic:
         
         cv2.imwrite(filename, cv2.cvtColor(self.app.display_img, cv2.COLOR_BGR2RGB))
     
-    def auto_save(self, filepath=r".\savFiles_pitDetection\autosave.sav"):
+    def auto_save(self, filepath=os.path.join(BASE_DIR, "savFiles_pitDetection", "autosave.sav")):
         """Auto-save the current parameters to a .sav file."""
         if not os.path.exists(os.path.dirname(filepath)):
             os.makedirs(os.path.dirname(filepath))
