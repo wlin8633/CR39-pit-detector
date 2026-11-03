@@ -13,7 +13,17 @@ python main.py
 
 `python -m cr39_detector` provides the same package entry point.
 
-For CPU analysis, set **Use CUDA = False**. CUDA is optional. If GPU initialization fails while **Use CUDA = True**, the log explains the fallback and the detector continues on the CPU.
+For CPU analysis, set **Use CUDA = False**. CUDA is optional. If GPU initialization
+fails while **Use CUDA = True**, the log explains the fallback and the detector
+continues on the CPU.
+
+For GPU use, first check `nvidia-smi` and `nvcc --version`. Select
+`requirements-gpu-cuda12.txt` for an installed CUDA 12.x Toolkit or
+`requirements-gpu-cuda13.txt` for CUDA 13.x. If only a compatible NVIDIA driver is
+installed, use the matching CuPy `[ctk]` wheel. See the README
+[GPU installation section](README.md#cpu-and-optional-gpu) and the official
+[CuPy installation guide](https://docs.cupy.dev/en/stable/install.html) before
+installing. Only one CuPy package may be installed in an environment.
 
 A first-time user can analyze the bundled example as follows:
 

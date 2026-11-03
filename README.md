@@ -46,13 +46,78 @@ If Tkinter is missing, install a Python distribution that includes Tcl/Tk. No CU
 
 The base installation uses `requirements.txt` and works without a GPU. Set **Use CUDA = False** to request the CPU backend explicitly.
 
-For a compatible CUDA 12.x system:
+### Check the GPU, driver, and CUDA version
+
+GPU execution requires a compatible NVIDIA GPU and driver. Use these commands before
+choosing a CuPy package:
 
 ```powershell
-python -m pip install -r requirements-gpu-cuda12.txt
+nvidia-smi
+nvcc --version
 ```
 
-When **Use CUDA = True**, the detector checks CuPy and an available CUDA device. If initialization fails, it records the reason and falls back to NumPy/SciPy.
+- `nvidia-smi` identifies the GPU and reports the **maximum CUDA version supported by
+  the installed driver**. It does not necessarily report the CUDA Toolkit installed in
+  the active environment.
+- `nvcc --version`, when available, reports the installed CUDA Toolkit used by a plain
+  `cupy-cudaXX` wheel.
+- Check the GPU's compute capability in NVIDIA's
+  [current GPU table](https://developer.nvidia.com/cuda/gpus) or
+  [legacy GPU table](https://developer.nvidia.com/cuda/gpus/legacy). NVIDIA's
+  [Toolkit/driver/architecture matrix](https://docs.nvidia.com/datacenter/tesla/drivers/cuda-toolkit-driver-and-architecture-matrix.html)
+  shows when support for older architectures ends.
+- Check driver compatibility in NVIDIA's
+  [CUDA compatibility guide](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html).
+  As a major-version guide, CUDA 12.x requires driver branch 525 or newer and CUDA
+  13.x requires branch 580 or newer.
+
+### Select the CuPy package
+
+Install exactly one CuPy package. The current CuPy 14 stable wheels support CUDA 12.x
+and CUDA 13.x, as listed in the official
+[CuPy installation guide](https://docs.cupy.dev/en/stable/install.html).
+
+| CUDA configuration | Installation |
+|---|---|
+| CUDA Toolkit 12.x already installed | `python -m pip install -r requirements-gpu-cuda12.txt` |
+| CUDA Toolkit 13.x already installed | `python -m pip install -r requirements-gpu-cuda13.txt` |
+| Compatible driver, but no system Toolkit | Install `requirements.txt`, then use the matching `[ctk]` command below |
+| CUDA 11.x or older | CuPy 14 has no stable wheel for this major version; use the CPU backend or update the GPU driver/Toolkit |
+
+For a driver-only installation, NVIDIA CUDA component wheels can be installed together
+with CuPy:
+
+```powershell
+# Choose one, not both.
+python -m pip install "cupy-cuda12x[ctk]>=14,<15"
+python -m pip install "cupy-cuda13x[ctk]>=14,<15"
+```
+
+Conda users may instead let conda-forge choose compatible CUDA runtime components:
+
+```powershell
+conda install -c conda-forge cupy
+```
+
+The CUDA 12 requirements file contains:
+
+```text
+-r requirements.txt
+cupy-cuda12x>=14,<15
+```
+
+For CUDA 13.x, the package line becomes `cupy-cuda13x>=14,<15`; the repository
+already provides `requirements-gpu-cuda13.txt`. Do not install both `cupy-cuda12x`
+and `cupy-cuda13x` in one environment.
+
+Verify the installation before enabling **Use CUDA**:
+
+```powershell
+python -c "import cupy as cp; cp.show_config(); print('CUDA devices:', cp.cuda.runtime.getDeviceCount())"
+```
+
+When **Use CUDA = True**, the detector checks CuPy and an available CUDA device. If
+initialization fails, it records the reason and falls back to NumPy/SciPy.
 
 ## State files and absolute paths
 
