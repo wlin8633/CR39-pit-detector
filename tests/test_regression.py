@@ -53,6 +53,9 @@ class PitDetectionRegressionTests(unittest.TestCase):
         self.assertEqual(peaks.shape, (164, 2))
         self.assertEqual(fitted_ovals.shape, (164, 6))
         self.assertEqual(summarize_pit_statuses(fitted_ovals), {-3: 15, -1: 26, 0: 123})
+        accepted = fitted_ovals[:, 5] == 0
+        self.assertTrue(np.isrealobj(fitted_ovals))
+        self.assertTrue(np.all(np.isfinite(fitted_ovals[accepted, :5])))
 
     def test_detector_quality_defaults(self):
         detector = PitDetector(

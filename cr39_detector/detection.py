@@ -500,16 +500,25 @@ class PitDetector:
                 Q, R_, S_ = np.linalg.lstsq(A_mat, np.ones_like(Xc), rcond=None)[0]
             except Exception:
                 continue
-            evals_np, evecs_np = np.linalg.eig(np.array([[Q, R_/2.0], [R_/2.0, S_]]))
-            idx_sorted = np.argsort(evals_np)
-            lam0, lam1 = evals_np[idx_sorted[0]], evals_np[idx_sorted[1]]
-            if lam0 <= 0 or lam1 <= 0:
+            # This quadratic-form matrix is real and symmetric.  ``eigh``
+            # preserves that structure and guarantees real eigenpairs.  In
+            # NumPy 2.5, the general ``eig`` solver can return complex128
+            # values with a zero imaginary part, which ``np.arctan2`` rejects.
+            quadratic_form = np.array(
+                [[Q, R_ / 2.0], [R_ / 2.0, S_]], dtype=np.float64
+            )
+            evals_np, evecs_np = np.linalg.eigh(quadratic_form)
+            if not np.all(np.isfinite(evals_np)) or np.any(evals_np <= 0):
                 continue
-            a_tmp, b_tmp = 1.0/np.sqrt(lam0), 1.0/np.sqrt(lam1)
-            major_eigenvector = evecs_np[:, idx_sorted[0]] if b_tmp <= a_tmp else evecs_np[:, idx_sorted[1]]
-            theta_tmp = np.arctan2(major_eigenvector[1], major_eigenvector[0])
-            if b_tmp > a_tmp:
-                a_tmp, b_tmp = b_tmp, a_tmp
+            radii = 1.0 / np.sqrt(evals_np)
+            major_index = int(np.argmax(radii))
+            minor_index = 1 - major_index
+            a_tmp = float(radii[major_index])
+            b_tmp = float(radii[minor_index])
+            major_eigenvector = evecs_np[:, major_index]
+            theta_tmp = float(
+                np.arctan2(major_eigenvector[1], major_eigenvector[0])
+            )
             a_val[i], b_val[i], theta_val[i] = a_tmp, b_tmp, theta_tmp
 
         # Vectorized RMS calculation for all valid ellipses

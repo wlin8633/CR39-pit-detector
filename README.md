@@ -11,24 +11,22 @@ The underlying method is described in the open-access AIP Advances article, [Aut
 
 ## Quick start
 
-The maintained environment is Python 3.14. Python 3.9 remains a legacy comparison environment; the source still passes the present CPU regression suite there when compatible dependencies are already installed.
-
-From an absolute checkout path in PowerShell:
+The maintained environment is Python 3.14. Activate a Python environment using Conda,
+venv, or another environment manager of your choice. Then run the following commands
+from the repository root:
 
 ```powershell
-cd C:\absolute\path\to\CR39-pit-detector
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python main.py
+```
+
+The package entry point is equivalent:
+
+```powershell
 python -m cr39_detector
 ```
 
-The compatibility entry point also remains available:
-
-```powershell
-python main_app.py
-```
+The older `main_app.py` entry point remains as a compatibility wrapper.
 
 If Tkinter is missing, install a Python distribution that includes Tcl/Tk. No CUDA package is required for CPU use.
 
@@ -107,7 +105,7 @@ tests/
   test_state.py        state, path, and configuration tests
 ```
 
-The old module names (`pitDetection.py`, `etchingModel.py`, `main_app.py`, and GUI helper modules) are thin compatibility wrappers.
+The old module names (`pitDetection.py`, `etchingModel.py`, `main_app.py`, and GUI helper modules) are thin compatibility wrappers. New users should start with `main.py`.
 
 ## Verification
 

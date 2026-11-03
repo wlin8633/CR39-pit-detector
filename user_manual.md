@@ -2,16 +2,16 @@
 
 ## 1. Installation and first run
 
-Use Python 3.14 for the maintained environment:
+Use Python 3.14 for the maintained environment. First activate a Python environment
+using Conda, venv, or another environment manager of your choice. Then run these
+commands from the repository root:
 
 ```powershell
-cd C:\absolute\path\to\CR39-pit-detector
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m cr39_detector
+python main.py
 ```
+
+`python -m cr39_detector` provides the same package entry point.
 
 For CPU analysis, set **Use CUDA = False**. CUDA is optional. If GPU initialization fails while **Use CUDA = True**, the log explains the fallback and the detector continues on the CPU.
 
