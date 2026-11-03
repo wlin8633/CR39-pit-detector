@@ -1,6 +1,5 @@
-numpy
-scipy
-matplotlib
-opencv-python
-Pillow
-cupy-cuda12x
+numpy>=2.3,<3
+scipy>=1.16,<2
+matplotlib>=3.10,<4
+opencv-python>=4.12,<5
+Pillow>=11.3,<13

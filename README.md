@@ -1,52 +1,126 @@
-# CR-39 Pit Detection & Etching Physics Model
+# CR-39 Pit Detector
 
-<div align="center">
-  <a href="https://pubs.aip.org/aip/adv/article/16/7/075051/3399496/Automated-CR-39-pit-detection-for-energy-and">
-    <img src="https://img.shields.io/badge/AIP_Advances-Featured_Article-1f5b9d?style=for-the-badge" alt="AIP Advances Featured Article">
-  </a>
-  <a href="https://pubs.aip.org/aip/adv/article/16/7/075051/3399496/Automated-CR-39-pit-detection-for-energy-and">
-    <img src="https://img.shields.io/badge/AIP-Scilight-2ea44f?style=for-the-badge" alt="AIP Scilight">
-  </a>
-</div>
+This repository detects and fits pits in CR-39 microscope images. It provides:
 
-> 🌟 **Featured Article & Scilight in AIP Advances** 🌟  
-> The physical models and algorithms driving this repository have been officially published in **AIP Advances**, and we are honored to be selected as both a **Featured Article** and highlighted in a **Scilight**.  
-> 📖 **Read the open-access paper:** [Automated CR-39 pit detection for energy and angle reconstruction](https://pubs.aip.org/aip/adv/article/16/7/075051/3399496/Automated-CR-39-pit-detection-for-energy-and)
+- a Tkinter GUI for image slicing, parameter tuning, detection, and result export;
+- CPU execution with NumPy/SciPy and optional NVIDIA GPU execution with CuPy;
+- stable six-column pit output with explicit rejection codes;
+- a separate etching/energy-angle model and its preserved NPZ development assets.
 
-This repository contains a GPU-accelerated algorithm for analyzing CR-39 Solid-State Nuclear Track Detectors. It automates the detection of overlapping pits, performs ellipse fitting to extract major/minor axes, and reconstructs incident ion energy and angle using a physical etching model.
+The underlying method is described in the open-access AIP Advances article, [Automated CR-39 pit detection for energy and angle reconstruction](https://pubs.aip.org/aip/adv/article/16/7/075051/3399496/Automated-CR-39-pit-detection-for-energy-and).
 
-## Core Features
-1. **GPU Acceleration**: Utilizes `cupy` to parallelize image filters and morphological operations for processing high-resolution microscope images.
-2. **Pit Detection Strategy**: Incorporates morphological filters to process images containing scratches, dust artifacts, and overlapping pits.
-3. **Physical Etching Model**: Maps geometric track properties back to particle stopping power (REL), energy, and incident angle using a lookup-table approach based on Geant4/FLUKA data.
-4. **Interactive GUI**: A multi-page Tkinter interface (`main_app.py`) for slicing images, tuning detection thresholds, and previewing results.
+## Quick start
 
-## Setup & Requirements
-This project supports both **GPU acceleration (via CuPy)** and **CPU fallback (via NumPy)**. For optimal performance on high-resolution images, an NVIDIA GPU is highly recommended.
+The maintained environment is Python 3.14. Python 3.9 remains a legacy comparison environment; the source still passes the present CPU regression suite there when compatible dependencies are already installed.
 
-**Recommended Environment:**
-We highly recommend using **Python 3.9.18** (or Python 3.9.x). This ensures numerical stability and compatibility with the required older NumPy versions (`numpy>=1.20.0, <2.0`).
+From an absolute checkout path in PowerShell:
 
-**CPU Fallback Mode (No GPU Required):**
-If you do not have an NVIDIA GPU or if CuPy is not installed, the application will automatically detect this and fall back to CPU execution. You can also manually disable GPU usage in the GUI by setting `Use CUDA = False`.
-
-**CUDA Version Configuration (For GPU Users):**
-By default, the `requirements.txt` installs `cupy-cuda12x` for CUDA 12.x. If you have a different CUDA version installed (e.g., CUDA 11.x), please open `requirements.txt` and change `cupy-cuda12x` to match your version (e.g., `cupy-cuda11x`), or install it manually:
-
-```bash
-# If you changed the version in requirements.txt, just run:
-pip install -r requirements.txt
-
-# Or manually install your specific cupy version (e.g., CUDA 11.x):
-pip install cupy-cuda11x
+```powershell
+cd C:\absolute\path\to\CR39-pit-detector
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m cr39_detector
 ```
 
-## Running the Application
-To launch the interactive GUI with the provided example:
-```bash
+The compatibility entry point also remains available:
+
+```powershell
 python main_app.py
 ```
-You can load the provided `example.bmp` and `example_state.sav` to see the algorithm in action.
 
-## User Manual
-For a detailed breakdown of the GUI parameters, physical models (REL & stopping power), and workflow for large datasets, please refer to the [User Manual (user_manual.md)](user_manual.md).
+If Tkinter is missing, install a Python distribution that includes Tcl/Tk. No CUDA package is required for CPU use.
+
+## First analysis
+
+1. Start the GUI.
+2. On **Image Slicing**, use **Browse** and select an image. The GUI stores and displays the resolved absolute path.
+3. For the bundled example, keep the initial slicing values and click **Update Image**.
+4. On **Pit Detection**, confirm the microscope resolution and physical radius range.
+5. Start with `eps_product_thre_offset = 7` and `eps_RMS_thre = 8`.
+6. Click **Detect Pits** and inspect both the overlay and status summary.
+7. Use **Save Display** for the annotated PNG and **Save Status** for a restorable analysis state.
+
+`example_state.sav` is a legacy demonstration file. Only load legacy `.sav` files that you trust because pickle files can execute code while loading.
+
+## CPU and optional GPU
+
+The base installation uses `requirements.txt` and works without a GPU. Set **Use CUDA = False** to request the CPU backend explicitly.
+
+For a compatible CUDA 12.x system:
+
+```powershell
+python -m pip install -r requirements-gpu-cuda12.txt
+```
+
+When **Use CUDA = True**, the detector checks CuPy and an available CUDA device. If initialization fails, it records the reason and falls back to NumPy/SciPy.
+
+## State files and absolute paths
+
+New state files use the `.cr39state` extension. They are ZIP bundles containing JSON settings and, for a manual save, compressed NumPy arrays loaded with `allow_pickle=False`.
+
+| Operation | Content | Location |
+|---|---|---|
+| Autosave on normal GUI close | settings only | `%LOCALAPPDATA%\CR39PitDetector\autosave.cr39state` |
+| Automatic startup load | the autosave above, if present | same absolute path |
+| **Save Status** | settings plus available image/result arrays | absolute path chosen by the user |
+| Legacy **Load Status** | trusted `.sav` import | absolute path chosen by the user |
+
+Writes are atomic: the application finishes a temporary bundle and then replaces the previous autosave. Generated image-slice folders, selected input images, saved states, and result images are all resolved to absolute paths.
+
+## Detection output and diagnostics
+
+`PitDetector.detect()` returns:
+
+- `peaks`: shape `(N, 2)`, with detected center coordinates;
+- `fitted_ovals`: shape `(N, 6)`, with `cx, cy, a, b, theta, status`.
+
+The sixth column is a stable public status code:
+
+| Code | Label | Meaning |
+|---:|---|---|
+| 0 | OK | fit accepted |
+| -1 | FIT | insufficient contour or no valid ellipse solution |
+| -2 | DENS | optional local-density rejection |
+| -3 | RMS | normalized fit mismatch exceeds `eps_RMS_thre` |
+| -4 | SIZE | fitted radius is outside the configured range |
+
+A status identifies the stage that rejected a candidate; it does not uniquely prove the physical cause. The GUI also reports lower-level fit failures and center-fallback counts.
+
+## Project layout
+
+```text
+cr39_detector/
+  config.py            validated detector configuration
+  detection.py         image detection and circle/ellipse fitting
+  diagnostics.py       stable status codes and summaries
+  etching.py           REL/etching and energy-angle model
+  io.py                Geant4/GetData text parsers
+  paths.py             central absolute-path policy
+  state.py             versioned .cr39state persistence
+  gui/                 Tkinter application, pages, and image window
+examples/
+  detect_example.py    minimal CPU API example
+tests/
+  test_regression.py   detector and energy-angle asset protection
+  test_state.py        state, path, and configuration tests
+```
+
+The old module names (`pitDetection.py`, `etchingModel.py`, `main_app.py`, and GUI helper modules) are thin compatibility wrappers.
+
+## Verification
+
+Run:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+The bundled CPU regression crop must produce 164 peaks: 123 `OK`, 26 `FIT`, and 15 `RMS`. The tests also verify blank-image handling, safe state round trips, absolute path resolution, configuration validation, NPZ schemas, and an energy-angle inverse lookup.
+
+## Energy-angle reconstruction status
+
+The tracked files in `savFiles_etchingModel` contain REL, track-range, fitted etching parameters, and energy-angle meshes used for continued development. They are protected by regression tests and are not regenerated by the GUI refactor. Image detection is usable now; a complete experimentally validated energy-angle reconstruction workflow is not yet exposed in the GUI.
+
+See [DATA_ASSETS.md](DATA_ASSETS.md) for the tracked asset schema and [user_manual.md](user_manual.md) for the full operating guide.
