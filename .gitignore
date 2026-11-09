@@ -9,3 +9,9 @@ __pycache__/
 *.txt
 !requirements.txt
 !requirements-gpu-cuda12.txt
+
+# Private etching-calibration inputs and generated benchmark products
+benchmarks/etching_calibration/local_paths.json
+benchmarks/etching_calibration/output/
+benchmarks/etching_calibration/data/*
+!benchmarks/etching_calibration/data/README.md

@@ -12,3 +12,16 @@ The files below are tracked scientific-development inputs under the absolute che
 | `to8MeV-etching_rate_ratio_fit_results.npz` | scalar fit parameters; `E_fit/a_fit/b_fit (800,)` | restricted-energy fit |
 
 The regression suite checks the current lookup schema, consistent mesh shapes, and a representative inverse lookup. These checks protect file compatibility; they do not establish experimental validity or transferability between particle species, CR-39 manufacturers/batches, or etching conditions.
+
+The tracked legacy NPZ files do not contain enough provenance to identify the
+bulk etch rate, etching time, REL unit, experimental axis convention, angle
+reference, input hashes, or full parameter covariance from the file alone.
+New private results should be created with
+[`benchmarks/etching_calibration`](benchmarks/etching_calibration/README.md),
+which stores these fields without publishing the experiment-specific inputs.
+
+The 2026-11-09 rerun reproduces the numerical `to2MeV` baseline, but the legacy
+experimental table contains ellipse semiaxes whereas the forward model returns
+full diameters. The benchmark records this as a legacy convention mismatch; a
+factor-of-two corrected refit must be versioned as a new calibration rather
+than replacing the legacy files silently.

@@ -423,7 +423,13 @@ class PitDetector:
 
     def _fit_ovals(self, peaks, product_thre, xx, yy):
         """
-        Fit ellipses to the detected peaks using batch least squares (vectorized), with vectorized post-processing.
+        Fit ellipses using batch least squares.
+
+        Columns 2 and 3 of the returned array are major and minor *semiaxes*
+        in fitted-image pixels.  They remain semiaxes because the ellipse
+        equation, OpenCV drawing, radius filtering, and RMS normalization all
+        use that internal convention.  Convert them to physical full
+        diameters with ``cr39_detector.fitted_oval_diameters``.
         """
         def RMS_distance_vectorized(points, h, k, a, b, theta, n_grid=1000):
             if len(points) == 0 or np.isnan(a) or np.isnan(b) or np.isnan(h) or np.isnan(k) or np.isnan(theta):
@@ -673,7 +679,12 @@ class PitDetector:
 
     def detect(self, img_bgr, bbox=None):
         """
-        Main detection pipeline.
+        Run the main detection pipeline.
+
+        Returns ``peaks`` as ``(x_px, y_px)`` and ``fitted_ovals`` as
+        ``(center_x_px, center_y_px, semi_major_px, semi_minor_px,
+        azimuth_rad, status)``.  Coordinates refer to the fitted extended
+        image with origin at its upper-left corner; x points right and y down.
         """
         self.last_diagnostics = {}
         if self.mode not in ['ellipse', 'circle']:

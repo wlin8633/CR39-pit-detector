@@ -20,6 +20,12 @@ from ..detection import (
     to_numpy,
 )
 from ..paths import DEFAULT_AUTOSAVE_PATH, DEFAULT_IMAGE_PATH, DETECTION_WORK_DIR, absolute_path
+from ..measurements import (
+    INTERNAL_OVAL_AXIS_CONVENTION,
+    PHYSICAL_AXIS_CONVENTION,
+    fitted_oval_diameters,
+    save_measurements_csv,
+)
 from ..state import load_legacy_pickle, load_state_bundle, save_state_bundle
 
 GUI_SETTING_NAMES = (
@@ -51,6 +57,8 @@ class AppLogic:
         image_path = settings.get("path_var")
         if image_path:
             settings["path_var"] = str(absolute_path(image_path))
+        settings["oval_axis_convention"] = INTERNAL_OVAL_AXIS_CONVENTION
+        settings["measurement_axis_convention"] = PHYSICAL_AXIS_CONVENTION
         return settings
 
     def _current_arrays(self):
@@ -447,6 +455,10 @@ class AppLogic:
         display_img = img_bgr.copy()
         peaks = to_numpy(peaks)
         fitted_ovals = to_numpy(fitted_ovals)
+        diameters_um = fitted_oval_diameters(
+            fitted_ovals,
+            extended_pixel_size,
+        ) * 1e6
         # For thickness scaling
         centre_size = int(self.app.centre_size.get())
         edge_size   = int(self.app.edge_size.get())
@@ -462,6 +474,7 @@ class AppLogic:
 
             if label == 0:
                 cx, cy, a_val, b_val, theta_val = oval[:5]
+                major_diameter_um, minor_diameter_um = diameters_um[idx]
                 cv2.ellipse(
                     display_img,
                     (int(cx), int(cy)),
@@ -472,7 +485,7 @@ class AppLogic:
                 cv2.putText(
                     display_img,
                     # f"{idx}",
-                    f"({a_val*extended_pixel_size*1e6:.2f},{b_val*extended_pixel_size*1e6:.2f})um",
+                    f"D=({major_diameter_um:.2f},{minor_diameter_um:.2f})um",
                     (int(peakx), int(peaky)),
                     cv2.FONT_HERSHEY_SIMPLEX, font_size, (0, 255, 255), font_edge_size, cv2.LINE_AA
                 )
@@ -565,6 +578,37 @@ class AppLogic:
 
         output_path = absolute_path(filename)
         cv2.imwrite(str(output_path), self.app.display_img)
+        return output_path
+
+    def save_measurements(self, filename=None):
+        """Export internal fits and physical full diameters to an auditable CSV."""
+        if not isinstance(self.app.ovals, np.ndarray):
+            self.log("No detection measurements are available. Run Detect Pits first.\n")
+            return None
+        image_path = absolute_path(self.app.path_var.get() or DEFAULT_IMAGE_PATH)
+        if filename is None:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV measurement table", "*.csv"), ("All files", "*.*")],
+                initialdir=str(image_path.parent),
+                initialfile=f"{image_path.stem}_measurements.csv",
+                title="Save Pit Measurements",
+            )
+        if not filename:
+            return None
+        pixel_size_m = (
+            float(self.app.obj_res_var.get()) / float(self.app.ext_rate_var.get())
+        )
+        output_path = save_measurements_csv(
+            filename,
+            self.app.ovals,
+            pixel_size_m,
+            accepted_only=False,
+        )
+        self.log(
+            f"Measurements saved to {output_path}\n"
+            "CSV physical axes are full diameters in metres; internal semiaxes in pixels are retained.\n"
+        )
         return output_path
 
     def auto_save(self, filepath=DEFAULT_AUTOSAVE_PATH):
