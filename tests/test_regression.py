@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from etchingModel import EtchingTrackRatioFitter
-from pitDetection import PitDetector, summarize_pit_statuses
+from cr39_detector.detection import PitDetector, summarize_pit_statuses
+from cr39_detector.etching import EtchingTrackRatioFitter
 
 
 class PitDetectionRegressionTests(unittest.TestCase):

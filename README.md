@@ -26,8 +26,6 @@ The package entry point is equivalent:
 python -m cr39_detector
 ```
 
-The older `main_app.py` entry point remains as a compatibility wrapper.
-
 If Tkinter is missing, install a Python distribution that includes Tcl/Tk. No CUDA package is required for CPU use.
 
 ## First analysis
@@ -145,7 +143,9 @@ tests/
   test_state.py        state, path, and configuration tests
 ```
 
-The old module names (`pitDetection.py`, `etchingModel.py`, `main_app.py`, and GUI helper modules) are thin compatibility wrappers. New users should start with `main.py`.
+Start the GUI with `python main.py` or `python -m cr39_detector`. For existing
+scripts, import detector and etching classes from `cr39_detector` and GUI helpers
+from `cr39_detector.gui` and its submodules.
 
 ## Verification
 
