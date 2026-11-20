@@ -1,3 +1,4 @@
+import math
 import time
 import tkinter as tk
 from tkinter import filedialog, ttk
@@ -16,6 +17,7 @@ from ..detection import (
     PIT_STATUS_INFO,
     PitDetector,
     format_pit_status_summary,
+    parse_extension_rate,
     summarize_pit_statuses,
     to_numpy,
 )
@@ -41,11 +43,58 @@ GUI_SETTING_NAMES = (
     "centre_size", "edge_size", "font_size", "font_edge_size",
 )
 
-STATE_ARRAY_NAMES = ("extended_img", "old_ext_img", "display_img", "ovals", "peaks")
-
 class AppLogic:
     def __init__(self, app):
         self.app = app
+        self._image_key = None
+        self._full_tile = None
+        self._selected_bbox = None
+        self._result_image = None
+        self._result_key = None
+        self._result_bbox = None
+        self._result_pixel_size = None
+
+    def _requested_image_key(self):
+        path = str(absolute_path(self.app.path_var.get()))
+        width, height = int(self.app.dw_var.get()), int(self.app.dh_var.get())
+        row, col = int(self.app.sh_var.get()), int(self.app.sw_var.get())
+        rate = parse_extension_rate(self.app.ext_rate_var.get())
+        if min(width, height) < 1 or min(row, col) < 0:
+            raise ValueError("Slice dimensions must be positive and indices non-negative")
+        return path, width, height, row, col, rate
+
+    def _check_loaded_image(self):
+        key = self._requested_image_key()
+        if self._image_key is not None and key != self._image_key:
+            raise ValueError(
+                "Image settings changed. Press Reset Image, then set the bounding box again if needed."
+            )
+        return key
+
+    def _invalidate_results(self):
+        self._result_image = None
+        self._result_key = None
+        self._result_bbox = None
+        self._result_pixel_size = None
+        self.app.ovals = None
+        self.app.peaks = None
+        self.app.display_img = None
+
+    def _check_result_scale(self):
+        key = self._check_loaded_image()
+        if self._result_image is None:
+            raise ValueError("No detection results are available. Run Detect Pits first.")
+        if key != self._result_key:
+            raise ValueError("Image settings changed. Press Reset Image and run Detect Pits again.")
+        if self._pixel_size(key[-1]) != self._result_pixel_size:
+            raise ValueError("Objective resolution changed. Run Detect Pits again before using these results.")
+        return self._result_pixel_size
+
+    def _pixel_size(self, rate):
+        resolution = float(self.app.obj_res_var.get())
+        if not math.isfinite(resolution) or resolution <= 0:
+            raise ValueError("Objective resolution must be a finite positive value in metres per raw pixel")
+        return resolution / rate
 
     def _current_settings(self):
         settings = {}
@@ -64,8 +113,14 @@ class AppLogic:
     def _current_arrays(self):
         return {
             name: value
-            for name in STATE_ARRAY_NAMES
-            if isinstance((value := getattr(self.app, name, None)), np.ndarray)
+            for name, value in {
+                "full_tile": self._full_tile,
+                "result_image": self._result_image,
+                "display_img": self.app.display_img,
+                "ovals": self.app.ovals,
+                "peaks": self.app.peaks,
+            }.items()
+            if isinstance(value, np.ndarray)
         }
 
     def save_parameters(self, filename=None, include_arrays=True):
@@ -83,8 +138,16 @@ class AppLogic:
         if not filename:
             return None
 
-        arrays = self._current_arrays() if include_arrays else None
-        saved_path = save_state_bundle(filename, self._current_settings(), arrays)
+        settings = self._current_settings()
+        arrays = None
+        if include_arrays:
+            arrays = self._current_arrays()
+            settings["image_key"] = self._image_key
+            settings["selected_bbox"] = self._selected_bbox
+            settings["result_key"] = self._result_key
+            settings["result_bbox"] = self._result_bbox
+            settings["result_pixel_size_m"] = self._result_pixel_size
+        saved_path = save_state_bundle(filename, settings, arrays)
         print(f"Parameters saved to {saved_path}")
         return saved_path
 
@@ -110,15 +173,14 @@ class AppLogic:
             print("WARNING: importing a trusted legacy pickle state file.")
             legacy = load_legacy_pickle(source)
             settings = {name: legacy[name] for name in GUI_SETTING_NAMES if name in legacy}
-            arrays = {
-                name: legacy[name]
-                for name in STATE_ARRAY_NAMES
-                if isinstance(legacy.get(name), np.ndarray)
-            }
+            arrays = {name: legacy[name] for name in ("display_img", "ovals") if isinstance(legacy.get(name), np.ndarray)}
         else:
             settings, arrays = load_state_bundle(source)
 
-        for name, value in settings.items():
+        for name in GUI_SETTING_NAMES:
+            if name not in settings:
+                continue
+            value = settings[name]
             variable = getattr(self.app, name, None)
             if variable is None or not hasattr(variable, "set"):
                 continue
@@ -130,9 +192,32 @@ class AppLogic:
             except (tk.TclError, TypeError, ValueError):
                 print(f"Could not load {name}")
 
-        for name, value in arrays.items():
-            if name in STATE_ARRAY_NAMES and isinstance(value, np.ndarray):
-                setattr(self.app, name, value)
+        self._invalidate_results()
+        self._image_key = None
+        self._full_tile = None
+        self._selected_bbox = None
+        self.app.extended_img = None
+        if settings.get("image_key") and "full_tile" in arrays and settings.get("selected_bbox"):
+            self._image_key = tuple(settings["image_key"])
+            self._full_tile = arrays["full_tile"]
+            self._selected_bbox = tuple(settings["selected_bbox"])
+            x1, y1, x2, y2 = self._selected_bbox
+            self.app.extended_img = self._full_tile[y1:y2, x1:x2]
+        if (
+            settings.get("result_key")
+            and settings.get("result_pixel_size_m")
+            and {"result_image", "peaks", "ovals"} <= arrays.keys()
+        ):
+            self._result_image = arrays["result_image"]
+            self._result_key = tuple(settings["result_key"])
+            self._result_bbox = tuple(settings["result_bbox"]) if settings.get("result_bbox") else None
+            self._result_pixel_size = settings["result_pixel_size_m"]
+            self.app.peaks = arrays["peaks"]
+            self.app.ovals = arrays["ovals"]
+            self.app.display_img = arrays.get("display_img")
+        elif "ovals" in arrays or source.suffix.lower() == ".sav":
+            self.app.display_img = arrays.get("display_img")
+            print("Loaded legacy settings. Use Update Image and Detect Pits to recreate measurements.")
 
         print(f"Parameters loaded from {source}")
         return source
@@ -151,13 +236,16 @@ class AppLogic:
         if filename:
             self.app.path_var.set(str(absolute_path(filename)))
 
-    def reset_image(self, scale=None):
+    def reset_image(self):
+        try:
+            key = self._requested_image_key()
+            self._prepare_tile(key)
+        except (OSError, TypeError, ValueError, cv2.error) as exc:
+            self.log(f"Image error: {exc}\n")
+            return
 
-        self.app.old_ext_img = None
-
-        dw = int(self.app.dw_var.get())
-        dh = int(self.app.dh_var.get())
-        er = int(self.app.ext_rate_var.get())
+        height, width = self._full_tile.shape[:2]
+        self._invalidate_results()
 
         if self.app.bbox_mode.get() == "Fraction":
             self.app.x1_var.set("0")
@@ -167,197 +255,156 @@ class AppLogic:
         else:
             self.app.x1_var.set("0")
             self.app.y1_var.set("0")
-            self.app.x2_var.set(f"{dw*er}")
-            self.app.y2_var.set(f"{dh*er}")
+            self.app.x2_var.set(str(width))
+            self.app.y2_var.set(str(height))
 
-        self.app.extended_img = None
-        self.update_image(scale)
+        self.update_image()
+
+    def _prepare_tile(self, key):
+        path, dw, dh, sh, sw, er = key
+        raw_img = cv2.imread(path)
+        if raw_img is None:
+            raise ValueError(f"Could not load image: {path}")
+        if sh * dh >= raw_img.shape[0] or sw * dw >= raw_img.shape[1]:
+            raise ValueError("Selected slice is outside the raw image")
+        sliced_dir = (DETECTION_WORK_DIR / "sliced_images").resolve()
+        extended_dir = (DETECTION_WORK_DIR / "extended_images").resolve()
+        scale_x, scale_y = PitDetector.slice_and_extend_img(
+            raw_img, dw, dh, True, str(sliced_dir), str(extended_dir), er
+        )
+        extended_path = extended_dir / f"{sh}_{sw}.bmp"
+        ext_img = cv2.imread(str(extended_path))
+        if ext_img is None:
+            raise ValueError(f"Could not load extended slice: {extended_path}")
+        self.app.path_var.set(path)
+        self.app.scale_var.set(f"Scale: h{scale_y}, w{scale_x}")
+        self._full_tile = ext_img
+        self._image_key = key
 
     def open_canvas_window(self):
         self.app.show_canvas_window()
 
-    def update_image(self, scale=None):
-        """
-        1) slice_and_extend if needed
-        2) crop extended_img by bounding box
-        3) push the final image to the separate Canvas window
-        """
-        path = str(absolute_path(self.app.path_var.get()))
-        self.app.path_var.set(path)
-        dw = int(self.app.dw_var.get())
-        dh = int(self.app.dh_var.get())
-        er = int(self.app.ext_rate_var.get())
-        sh = self.app.sh_var.get()
-        sw = self.app.sw_var.get()
+    def update_image(self):
+        """Apply a bounding box relative to the full extended tile."""
+        try:
+            key = self._check_loaded_image()
+            if self._full_tile is None:
+                self._prepare_tile(key)
+            bbox = self._requested_bbox()
+        except (OSError, TypeError, ValueError, cv2.error) as exc:
+            self.log(f"Image error: {exc}\n")
+            return
 
-        x1_val = float(self.app.x1_var.get())
-        y1_val = float(self.app.y1_var.get())
-        x2_val = float(self.app.x2_var.get())
-        y2_val = float(self.app.y2_var.get())
-        bbox_mode = self.app.bbox_mode.get()
-
-        # If no extended_img loaded, do slice_and_extend
-        if self.app.extended_img is None:
-            raw_img = cv2.imread(fr"{path}")
-            if raw_img is None:
-                print("Could not load:", path)
-                return
-
-            if scale is not None:
-                raw_img_shape = raw_img.shape[:2]
-                dw = int(np.ceil(raw_img_shape[1] / scale[1]))
-                dh = int(np.ceil(raw_img_shape[0] / scale[0]))
-                self.app.bdw_var.set(str(dw))
-                self.app.bdh_var.set(str(dh))
-
-            sliced_dir = (DETECTION_WORK_DIR / "sliced_images").resolve()
-            extended_dir = (DETECTION_WORK_DIR / "extended_images").resolve()
-            scale_x, scale_y = PitDetector.slice_and_extend_img(
-                raw_img, dw, dh, True, str(sliced_dir), str(extended_dir), er
-            )
-
-            self.app.scale_var.set(f"Scale: h{int(scale_y)}, w{int(scale_x)}")
-
-            # Load extended slice
-            extended_path = (DETECTION_WORK_DIR / "extended_images" / f"{sh}_{sw}.bmp").resolve()
-            ext_img = cv2.imread(str(extended_path))
-            if ext_img is None:
-                print("Could not load extended slice:", extended_path)
-                return
-            self.app.extended_img = ext_img
-
-        # Now we have self.app.extended_img
-        ext_img = self.app.extended_img
-        h, w = ext_img.shape[:2]
-
-        # Convert bounding box
-        if bbox_mode == "Fraction":
-            x1 = int(np.clip(x1_val, 0, 1) * w)
-            y1 = int(np.clip(y1_val, 0, 1) * h)
-            x2 = int(np.clip(x2_val, 0, 1) * w)
-            y2 = int(np.clip(y2_val, 0, 1) * h)
-        else:
-            x1 = int(np.clip(x1_val, 0, w))
-            y1 = int(np.clip(y1_val, 0, h))
-            x2 = int(np.clip(x2_val, 0, w))
-            y2 = int(np.clip(y2_val, 0, h))
-
-        # Crop
-        x1, x2 = sorted([x1, x2])
-        y1, y2 = sorted([y1, y2])
-        x2 = min(x2, w)
-        y2 = min(y2, h)
-
-        cropped = ext_img[y1:y2, x1:x2]
+        self._selected_bbox = bbox
+        x1, y1, x2, y2 = bbox
+        cropped = self._full_tile[y1:y2, x1:x2]
         self.app.extended_img = cropped
 
-        # Show in separate window
         if not self.app.image_window:
             self.open_canvas_window()
         if self.app.image_window and tk.Toplevel.winfo_exists(self.app.image_window):
             self.app.image_window.show_image(cropped)
-        else:
-            print("Canvas window is not available.")
+
+    def _requested_bbox(self):
+        height, width = self._full_tile.shape[:2]
+        values = [float(var.get()) for var in (
+            self.app.x1_var, self.app.y1_var, self.app.x2_var, self.app.y2_var,
+        )]
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("Bounding box coordinates must be finite")
+        x1, y1, x2, y2 = values
+        if self.app.bbox_mode.get() == "Fraction":
+            x1, x2 = x1 * width, x2 * width
+            y1, y2 = y1 * height, y2 * height
+        x1, x2 = sorted(int(np.clip(x, 0, width)) for x in (x1, x2))
+        y1, y2 = sorted(int(np.clip(y, 0, height)) for y in (y1, y2))
+        if x1 == x2 or y1 == y2:
+            raise ValueError("Bounding box must cover at least one pixel in each direction")
+        return x1, y1, x2, y2
 
     def batch_detect(self):
-        # 1) Get the desired width and height
-        bsw = int(self.app.bsw_var.get())
-        bsh = int(self.app.bsh_var.get())
-        er = int(self.app.ext_rate_var.get())
+        try:
+            key = self._check_loaded_image()
+            config = self._build_detection_config(key[-1])
+            columns, rows = int(self.app.bsw_var.get()), int(self.app.bsh_var.get())
+            raw = cv2.imread(key[0])
+            if raw is None:
+                raise ValueError(f"Could not load image: {key[0]}")
+            height, width = raw.shape[:2]
+            if not (1 <= columns <= width and 1 <= rows <= height):
+                raise ValueError("Batch grid dimensions must be positive and within the raw image")
+            dw, dh = math.ceil(width / columns), math.ceil(height / rows)
+            rate = key[-1]
+            sliced_dir = DETECTION_WORK_DIR / "batch" / "sliced_images"
+            extended_dir = DETECTION_WORK_DIR / "batch" / "extended_images"
+            columns, rows = PitDetector.slice_and_extend_img(
+                raw, dw, dh, True, str(sliced_dir), str(extended_dir), rate,
+            )
 
-        self.reset_image(scale=(bsh, bsw))
-        bdh = int(self.app.bdh_var.get())
-        bdw = int(self.app.bdw_var.get())
+            options = config.as_detector_kwargs()
+            options["verbose"] = False
+            detector = PitDetector(**options)
+            stitched = np.empty((round(height * rate), round(width * rate), 3), dtype=np.uint8)
+            total_peaks, total_ovals = [], []
+            for row in range(rows):
+                for col in range(columns):
+                    path = extended_dir / f"{row}_{col}.bmp"
+                    tile = cv2.imread(str(path))
+                    if tile is None:
+                        raise ValueError(f"Could not load extended slice: {path}")
+                    peaks, ovals = map(to_numpy, detector.detect(tile))
+                    x, y = round(col * dw * rate), round(row * dh * rate)
+                    peaks[:, :2] += (x, y)
+                    ovals[:, :2] += (x, y)
+                    h, w = tile.shape[:2]
+                    stitched[y:y + h, x:x + w] = tile
+                    total_peaks.append(peaks)
+                    total_ovals.append(ovals)
+            peaks, ovals = np.concatenate(total_peaks), np.concatenate(total_ovals)
+        except (OSError, TypeError, ValueError, cv2.error) as exc:
+            self.log(f"Batch detection error: {exc}\n")
+            return
 
-        # 3) loop to detect the sliced images
-        stitch_extended_img = np.zeros((bdh*er*bsh, bdw*er*bsw, 3), dtype=np.uint8)
-        total_peaks = []
-        total_ovals = []
-
-        self.app.verbose_var.set("False")
-        t0 = time.time()
-
-        for i in range(bsh):
-            for j in range(bsw):
-                extended_path = (DETECTION_WORK_DIR / "extended_images" / f"{i}_{j}.bmp").resolve()
-                ext_img = cv2.imread(str(extended_path))
-
-                if ext_img is None:
-                    print("Could not load extended slice:", extended_path)
-                    continue
-                self.app.extended_img = ext_img
-
-                # 4) Detect the pits
-                self.detect_pits(display=False)
-
-                # update the position
-                self.app.peaks[:, 0] += j*bdw*er
-                self.app.peaks[:, 1] += i*bdh*er
-
-                self.app.ovals[:, 0] += j*bdw*er
-                self.app.ovals[:, 1] += i*bdh*er
-
-                # 5) Save the results
-                stitch_extended_img[i*bdh*er:(i+1)*bdh*er, j*bdw*er:(j+1)*bdw*er] = self.app.extended_img
-
-                total_peaks = np.append(total_peaks, self.app.peaks).reshape(-1, 2)
-                total_ovals = np.append(total_ovals, self.app.ovals).reshape(-1, 6)
-
-                print(f"Progress:                     {i+1}/{bsh}, {j+1}/{bsw}", end="\r")
-
-        # 6) Save the stitched images
-        self.app.extended_img = stitch_extended_img
-        self.app.peaks = total_peaks
-        self.app.ovals = total_ovals
-
-        self.app.verbose_var.set("True")
-        dt = time.time() - t0
-        print(f"\nBatch detection time: {dt:.3f}s\nFound {len(self.app.peaks)} peaks, {np.sum(self.app.ovals[:, 5] == 0)} ovals\n")
-
-        self.display_results(stitch_extended_img, total_peaks, total_ovals, float(self.app.obj_res_var.get()) / float(self.app.ext_rate_var.get()))
-        self.reset_image()
+        self.app.bdw_var.set(str(dw))
+        self.app.bdh_var.set(str(dh))
+        self._remember_results(stitched, key, None, config.pixel_size, peaks, ovals)
+        self.log(f"Batch detection: {len(peaks)} peaks | {format_pit_status_summary(summarize_pit_statuses(ovals))}\n")
+        self.display_results(stitched, peaks, ovals, config.pixel_size)
 
     def replace_detection(self):
-        self.app.old_ext_img = self.app.extended_img.copy()
+        try:
+            pixel_size = self._check_result_scale()
+            if self._result_bbox is None or self._full_tile is None:
+                raise ValueError("Replace Detect requires a previous single-image detection.")
+            bx, by, bx2, by2 = self._result_bbox
+            x1, y1, x2, y2 = self._requested_bbox()
+            if not (bx <= x1 < x2 <= bx2 and by <= y1 < y2 <= by2):
+                raise ValueError("Replacement bounding box must be within the previously detected region.")
+            config = self._build_detection_config(self._image_key[-1])
+            roi = self._full_tile[y1:y2, x1:x2]
+            new_peaks, new_ovals = self._run_detection(roi, config)
+        except (TypeError, ValueError, cv2.error) as exc:
+            self.log(f"Replace detection error: {exc}\n")
+            return
 
-        x1 = int(float(self.app.x1_var.get()) * self.app.old_ext_img.shape[1])
-        y1 = int(float(self.app.y1_var.get()) * self.app.old_ext_img.shape[0])
-        x2 = int(float(self.app.x2_var.get()) * self.app.old_ext_img.shape[1])
-        y2 = int(float(self.app.y2_var.get()) * self.app.old_ext_img.shape[0])
+        x, y = x1 - bx, y1 - by
+        new_peaks[:, :2] += (x, y)
+        new_ovals[:, :2] += (x, y)
+        x_end, y_end = x2 - bx, y2 - by
 
-        old_peaks = self.app.peaks.copy()
-        old_ovals = self.app.ovals.copy()
+        def inside(peaks):
+            px, py = peaks.T
+            return (x <= px) & (px < x_end) & (y <= py) & (py < y_end)
 
-        # detect the pits by the current image
-        self.update_image()
-        self.detect_pits(display=False)
-        self.app.extended_img = self.app.old_ext_img
-        new_peaks = self.app.peaks.copy()
-        new_ovals = self.app.ovals.copy()
-        new_peaks[:, 0] += x1
-        new_peaks[:, 1] += y1
-        new_ovals[:, 0] += x1
-        new_ovals[:, 1] += y1
+        keep = ~inside(self.app.peaks)
+        insert = inside(new_peaks)
+        peaks = np.concatenate((self.app.peaks[keep], new_peaks[insert]))
+        ovals = np.concatenate((self.app.ovals[keep], new_ovals[insert]))
+        self._remember_results(self._result_image, self._image_key, self._result_bbox, pixel_size, peaks, ovals)
+        self.display_results(self._result_image, peaks, ovals, pixel_size)
 
-        # replace the old results within the range of the new results
-        old_cond = (old_peaks[:, 0] <= x1) | (old_peaks[:, 0] >= x2) | (old_peaks[:, 1] <= y1) | (old_peaks[:, 1] >= y2)
-        old_ovals = old_ovals[old_cond]
-        old_peaks = old_peaks[old_cond]
-
-        new_cond = (new_peaks[:, 0] >= x1) & (new_peaks[:, 0] <= x2) & (new_peaks[:, 1] >= y1) & (new_peaks[:, 1] <= y2)
-        new_ovals = new_ovals[new_cond]
-        new_peaks = new_peaks[new_cond]
-
-        self.app.peaks = np.append(old_peaks, new_peaks).reshape(-1, 2)
-        self.app.ovals = np.append(old_ovals, new_ovals).reshape(-1, 6)
-
-        # display the results
-        self.display_results(self.app.extended_img, self.app.peaks, self.app.ovals, float(self.app.obj_res_var.get()) / float(self.app.ext_rate_var.get()))
-
-    def _build_detection_config(self):
-        er = float(self.app.ext_rate_var.get())
-        obj_res = float(self.app.obj_res_var.get())
-        extended_pixel_size = obj_res / er
+    def _build_detection_config(self, rate):
+        extended_pixel_size = self._pixel_size(rate)
         return DetectionConfig(
             pixel_size=extended_pixel_size,
             radius_range=(
@@ -391,19 +438,21 @@ class AppLogic:
             self.log("No extended image found! Please slice & show an image first.\n")
             return
 
-        # The entire cropped image is our ROI => bbox = [0,0, width, height]
-        h, w = self.app.extended_img.shape[:2]
-        bbox = [0, 0, w, h]
-
         try:
-            config = self._build_detection_config()
-        except (TypeError, ValueError, ZeroDivisionError) as exc:
+            key = self._check_loaded_image()
+            config = self._build_detection_config(key[-1])
+            img_bgr = self.app.extended_img
+            peaks, fitted_ovals = self._run_detection(img_bgr, config)
+        except (TypeError, ValueError, cv2.error) as exc:
             self.log(f"Parameter error: {exc}\n")
             return
-        extended_pixel_size = config.pixel_size
 
-        img_bgr = self.app.extended_img.copy()
+        self._remember_results(img_bgr, key, self._selected_bbox, config.pixel_size, peaks, fitted_ovals)
+        if display:
+            self.display_results(img_bgr, peaks, fitted_ovals, config.pixel_size)
+        return True
 
+    def _run_detection(self, img_bgr, config):
         t0 = time.time()
 
         detector = PitDetector(**config.as_detector_kwargs())
@@ -413,10 +462,7 @@ class AppLogic:
         self.log(backend_message + "\n")
 
         # Run detection
-        peaks, fitted_ovals = detector.detect(
-            img_bgr=img_bgr,
-            bbox=bbox,
-        )
+        peaks, fitted_ovals = detector.detect(img_bgr)
 
         dt = time.time() - t0
 
@@ -442,13 +488,16 @@ class AppLogic:
                 "their detected peak centers were used instead.\n"
             )
 
-        # Save the results (ensure they are numpy arrays for compatibility with np.append etc.)
-        self.app.peaks = peaks.get() if hasattr(peaks, 'get') else peaks.copy()
-        self.app.ovals = fitted_ovals.get() if hasattr(fitted_ovals, 'get') else fitted_ovals.copy()
+        return to_numpy(peaks), to_numpy(fitted_ovals)
 
-        # Display the results
-        if display:
-            self.display_results(img_bgr, peaks, fitted_ovals, extended_pixel_size)
+    def _remember_results(self, image, key, bbox, pixel_size, peaks, ovals):
+        self._result_image = image
+        self._result_key = key
+        self._result_bbox = bbox
+        self._result_pixel_size = pixel_size
+        self.app.peaks = peaks
+        self.app.ovals = ovals
+        self.app.display_img = None
 
     def display_results(self, img_bgr, peaks, fitted_ovals, extended_pixel_size):
         # display the image
@@ -548,14 +597,16 @@ class AppLogic:
             print("Canvas window is not available.")
 
     def show_current_results(self):
-        if self.app.extended_img is None or not isinstance(self.app.peaks, np.ndarray) or not isinstance(self.app.ovals, np.ndarray):
-            self.log("No detection results are available. Run Detect Pits first.\n")
+        try:
+            pixel_size = self._check_result_scale()
+        except (TypeError, ValueError) as exc:
+            self.log(f"{exc}\n")
             return
         self.display_results(
-            self.app.extended_img,
+            self._result_image,
             self.app.peaks,
             self.app.ovals,
-            float(self.app.obj_res_var.get()) / float(self.app.ext_rate_var.get()),
+            pixel_size,
         )
 
     def save_results(self, filename=None):
@@ -563,6 +614,12 @@ class AppLogic:
         if not isinstance(self.app.display_img, np.ndarray):
             self.log("No annotated display is available. Run Detect Pits first.\n")
             return None
+        if self._result_image is not None:
+            try:
+                self._check_result_scale()
+            except (TypeError, ValueError) as exc:
+                self.log(f"{exc}\n")
+                return None
         image_path = absolute_path(self.app.path_var.get() or DEFAULT_IMAGE_PATH)
         if filename is None:
             # 2) Ask user for the filename
@@ -577,13 +634,17 @@ class AppLogic:
             return  # user canceled
 
         output_path = absolute_path(filename)
-        cv2.imwrite(str(output_path), self.app.display_img)
+        if not cv2.imwrite(str(output_path), self.app.display_img):
+            self.log(f"Could not save result image: {output_path}\n")
+            return None
         return output_path
 
     def save_measurements(self, filename=None):
         """Export internal fits and physical full diameters to an auditable CSV."""
-        if not isinstance(self.app.ovals, np.ndarray):
-            self.log("No detection measurements are available. Run Detect Pits first.\n")
+        try:
+            pixel_size_m = self._check_result_scale()
+        except (TypeError, ValueError) as exc:
+            self.log(f"{exc}\n")
             return None
         image_path = absolute_path(self.app.path_var.get() or DEFAULT_IMAGE_PATH)
         if filename is None:
@@ -596,9 +657,6 @@ class AppLogic:
             )
         if not filename:
             return None
-        pixel_size_m = (
-            float(self.app.obj_res_var.get()) / float(self.app.ext_rate_var.get())
-        )
         output_path = save_measurements_csv(
             filename,
             self.app.ovals,

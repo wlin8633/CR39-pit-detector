@@ -32,14 +32,13 @@ A first-time user can analyze the bundled example as follows:
 The application resolves paths before storing or using them. This prevents results from changing merely because the program was launched from another working directory.
 
 - Input image: absolute path shown in **Raw Image Path**.
-- Slices: absolute `savFiles_pitDetection\sliced_images` path under the checkout.
-- Extended slices: absolute `savFiles_pitDetection\extended_images` path under the checkout.
+- Slices and extended slices: `%LOCALAPPDATA%\CR39PitDetector\image_tiles`.
 - Exported overlay: absolute path selected in **Save Display**.
 - Measurement table: absolute CSV path selected in **Save Measurements**.
 - Manual state: absolute path selected in **Save Status**.
 - Autosave: `%LOCALAPPDATA%\CR39PitDetector\autosave.cr39state`.
 
-The autosave occurs during a normal GUI close and is loaded at the next startup. It contains settings only, keeping it small and robust. A manual state also includes available `extended_img`, `old_ext_img`, `display_img`, `ovals`, and `peaks` arrays.
+The autosave occurs during a normal GUI close and is loaded at the next startup. It contains settings only. A manual state can also include the loaded tile, ROI and fitted image, pixel scale, fitted ovals, peaks, and the annotated display. For older state files, load the saved settings, then use **Update Image** and **Detect Pits** to recreate measurements at the confirmed scale.
 
 ## 3. Image Slicing page
 
@@ -49,7 +48,7 @@ The autosave occurs during a normal GUI close and is loaded at the next startup.
 |---|---|---|
 | **Raw Image Path** | absolute path | Microscope image in BMP, PNG, JPEG, or TIFF format |
 | `desired_width / desired_height` | raw-image pixels | Target size of one unextended slice |
-| `extended_rate` | dimensionless integer | Spatial enlargement factor; one fitted-image pixel represents `objective_resolution / extended_rate` metres |
+| `extended_rate` | dimensionless number ≥ 1 | Uniform enlargement, e.g. 1, 1.2, 1.5, or 2. One fitted-image pixel represents `objective_resolution / extended_rate` metres. |
 | `slice h / w` | integer index | Row and column of the extended slice to open |
 | `Batch scale h / w` | integer count | Number of rows and columns processed by **Batch Detect** |
 
@@ -58,7 +57,7 @@ The autosave occurs during a normal GUI close and is loaded at the next startup.
 - **Fraction**: `x1, y1, x2, y2` are dimensionless fractions from 0 to 1.
 - **Absolute**: the values are pixel coordinates in the currently loaded extended image.
 
-Coordinates are sorted and clipped to the image. **Reset Image** clears the current crop and restores the full bounding box.
+Coordinates are sorted and clipped against the full extended tile. Repeating **Update Image** with the same bounding box selects the same area. After changing the image path, slice indices, slice dimensions, or extension rate, click **Reset Image** to load the new image. This restores the full bounding box and clears previous fits. Reapply the desired box with **Update Image** before detection.
 
 ### Display controls
 
@@ -74,7 +73,7 @@ These change only the overlay, not the numerical fit.
 - **Browse**: select an image and store its resolved absolute path.
 - **Update Image**: slice if required, load the selected extended slice, and apply the bounding box.
 - **Detect Pits**: run detection on the current crop.
-- **Replace Detect**: re-run a selected subregion and replace results there.
+- **Replace Detect**: re-run a subregion of a previous single-image detection and replace results inside that subregion. The original and replacement fits must share the same image geometry and pixel calibration.
 - **Show Display**: reopen the current result window.
 - **Save Display**: export the BGR result correctly as a PNG.
 - **Save Measurements**: export all candidates to CSV with internal semiaxes,
@@ -89,7 +88,7 @@ These change only the overlay, not the numerical fit.
 | Parameter | Unit/type | Definition | Check before use |
 |---|---|---|---|
 | `objective_resolution` | m/raw-image pixel | Microscope pixel calibration before image extension | Measure for the selected objective and camera |
-| `extended_rate` | dimensionless integer | Spatial enlargement factor used by slicing and fitting | Must match the loaded extended image |
+| `extended_rate` | dimensionless number ≥ 1 | Spatial enlargement factor used by slicing and fitting | Use **Reset Image** after changing it |
 | `radius_min / radius_max` | m | Accepted internal semiaxis/radius interval | Set from species, energy, etching, and optics |
 | `mode` | `ellipse`, `circle`, or `None` | Select ellipse fitting, circle fitting, or peak finding without shape fitting | Use `ellipse` for the energy-angle path |
 
