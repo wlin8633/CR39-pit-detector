@@ -1,4 +1,6 @@
 import math
+from queue import Empty, Queue
+from threading import Event, Thread
 import time
 import tkinter as tk
 from tkinter import filedialog, ttk
@@ -14,8 +16,10 @@ from matplotlib.figure import Figure
 
 from ..config import DetectionConfig
 from ..detection import (
+    DetectionCancelled,
     PIT_STATUS_INFO,
     PitDetector,
+    check_cancelled,
     format_pit_status_summary,
     parse_extension_rate,
     summarize_pit_statuses,
@@ -53,6 +57,66 @@ class AppLogic:
         self._result_key = None
         self._result_bbox = None
         self._result_pixel_size = None
+        self._cancel_event = None
+
+    @property
+    def busy(self):
+        return self._cancel_event is not None
+
+    def stop(self):
+        if self._cancel_event is not None and not self._cancel_event.is_set():
+            self._cancel_event.set()
+            self.log("Stopping at the next cancellation checkpoint...\n")
+
+    def _execute_job(self, name, compute, finish, background):
+        if self.busy:
+            return
+        if not background:
+            try:
+                finish(compute(None, self.log))
+                return True
+            except (OSError, TypeError, ValueError, cv2.error) as exc:
+                self.log(f"{name} error: {exc}\n")
+                return
+
+        cancel_event = Event()
+        messages = Queue()
+        self._cancel_event = cancel_event
+
+        def worker():
+            try:
+                result = compute(cancel_event, lambda msg: messages.put(("log", msg)))
+            except Exception as exc:
+                messages.put(("error", exc))
+            else:
+                messages.put(("result", result))
+
+        def poll():
+            while True:
+                try:
+                    kind, value = messages.get_nowait()
+                except Empty:
+                    self.app.master.after(40, poll)
+                    return
+                if kind == "log":
+                    self.log(value)
+                    continue
+
+                self._cancel_event = None
+                self.app.set_job_controls(False)
+                if cancel_event.is_set() or isinstance(value, DetectionCancelled):
+                    self.log(f"{name} stopped. Previous results were kept.\n")
+                elif kind == "error":
+                    self.log(f"{name} error: {value}\n")
+                else:
+                    finish(value)
+                return
+
+        self.app.set_job_controls(True)
+        self.log(f"{name} started.\n")
+        Thread(target=worker, name=f"CR39 {name}", daemon=True).start()
+        self.app.master.after(40, poll)
+        return True
 
     def _requested_image_key(self):
         path = str(absolute_path(self.app.path_var.get()))
@@ -236,32 +300,33 @@ class AppLogic:
         if filename:
             self.app.path_var.set(str(absolute_path(filename)))
 
-    def reset_image(self):
+    def reset_image(self, *, background=False):
+        if self.busy:
+            return
         try:
             key = self._requested_image_key()
-            self._prepare_tile(key)
-        except (OSError, TypeError, ValueError, cv2.error) as exc:
+        except (TypeError, ValueError) as exc:
             self.log(f"Image error: {exc}\n")
             return
 
-        height, width = self._full_tile.shape[:2]
-        self._invalidate_results()
-
-        if self.app.bbox_mode.get() == "Fraction":
+        def finish(result):
+            self._load_prepared_tile(key, result)
+            height, width = self._full_tile.shape[:2]
+            self._invalidate_results()
+            fractional = self.app.bbox_mode.get() == "Fraction"
             self.app.x1_var.set("0")
             self.app.y1_var.set("0")
-            self.app.x2_var.set("1")
-            self.app.y2_var.set("1")
-        else:
-            self.app.x1_var.set("0")
-            self.app.y1_var.set("0")
-            self.app.x2_var.set(str(width))
-            self.app.y2_var.set(str(height))
+            self.app.x2_var.set("1" if fractional else str(width))
+            self.app.y2_var.set("1" if fractional else str(height))
+            self._show_bbox((0, 0, width, height))
 
-        self.update_image()
+        return self._execute_job(
+            "Reset Image", lambda event, log: self._prepare_tile(key, event), finish, background,
+        )
 
-    def _prepare_tile(self, key):
+    def _prepare_tile(self, key, cancel_event=None):
         path, dw, dh, sh, sw, er = key
+        check_cancelled(cancel_event)
         raw_img = cv2.imread(path)
         if raw_img is None:
             raise ValueError(f"Could not load image: {path}")
@@ -270,12 +335,17 @@ class AppLogic:
         sliced_dir = (DETECTION_WORK_DIR / "sliced_images").resolve()
         extended_dir = (DETECTION_WORK_DIR / "extended_images").resolve()
         scale_x, scale_y = PitDetector.slice_and_extend_img(
-            raw_img, dw, dh, True, str(sliced_dir), str(extended_dir), er
+            raw_img, dw, dh, True, str(sliced_dir), str(extended_dir), er, cancel_event=cancel_event,
         )
         extended_path = extended_dir / f"{sh}_{sw}.bmp"
         ext_img = cv2.imread(str(extended_path))
         if ext_img is None:
             raise ValueError(f"Could not load extended slice: {extended_path}")
+        return ext_img, scale_x, scale_y
+
+    def _load_prepared_tile(self, key, result):
+        ext_img, scale_x, scale_y = result
+        path = key[0]
         self.app.path_var.set(path)
         self.app.scale_var.set(f"Scale: h{scale_y}, w{scale_x}")
         self._full_tile = ext_img
@@ -284,17 +354,35 @@ class AppLogic:
     def open_canvas_window(self):
         self.app.show_canvas_window()
 
-    def update_image(self):
+    def update_image(self, *, background=False):
         """Apply a bounding box relative to the full extended tile."""
+        if self.busy:
+            return
         try:
             key = self._check_loaded_image()
-            if self._full_tile is None:
-                self._prepare_tile(key)
-            bbox = self._requested_bbox()
-        except (OSError, TypeError, ValueError, cv2.error) as exc:
+        except (TypeError, ValueError) as exc:
             self.log(f"Image error: {exc}\n")
             return
 
+        def show_selection():
+            try:
+                bbox = self._requested_bbox()
+            except (TypeError, ValueError) as exc:
+                self.log(f"Image error: {exc}\n")
+                return
+            self._show_bbox(bbox)
+
+        if self._full_tile is None:
+            def finish(result):
+                self._load_prepared_tile(key, result)
+                show_selection()
+
+            return self._execute_job(
+                "Update Image", lambda event, log: self._prepare_tile(key, event), finish, background,
+            )
+        show_selection()
+
+    def _show_bbox(self, bbox):
         self._selected_bbox = bbox
         x1, y1, x2, y2 = bbox
         cropped = self._full_tile[y1:y2, x1:x2]
@@ -322,11 +410,19 @@ class AppLogic:
             raise ValueError("Bounding box must cover at least one pixel in each direction")
         return x1, y1, x2, y2
 
-    def batch_detect(self):
+    def batch_detect(self, *, background=False):
+        if self.busy:
+            return
         try:
             key = self._check_loaded_image()
             config = self._build_detection_config(key[-1])
             columns, rows = int(self.app.bsw_var.get()), int(self.app.bsh_var.get())
+        except (TypeError, ValueError) as exc:
+            self.log(f"Batch detection error: {exc}\n")
+            return
+
+        def compute(cancel_event, log):
+            check_cancelled(cancel_event)
             raw = cv2.imread(key[0])
             if raw is None:
                 raise ValueError(f"Could not load image: {key[0]}")
@@ -337,17 +433,20 @@ class AppLogic:
             rate = key[-1]
             sliced_dir = DETECTION_WORK_DIR / "batch" / "sliced_images"
             extended_dir = DETECTION_WORK_DIR / "batch" / "extended_images"
-            columns, rows = PitDetector.slice_and_extend_img(
+            tile_columns, tile_rows = PitDetector.slice_and_extend_img(
                 raw, dw, dh, True, str(sliced_dir), str(extended_dir), rate,
+                cancel_event=cancel_event,
             )
 
             options = config.as_detector_kwargs()
             options["verbose"] = False
-            detector = PitDetector(**options)
+            detector = PitDetector(**options, cancel_event=cancel_event, progress=log)
             stitched = np.empty((round(height * rate), round(width * rate), 3), dtype=np.uint8)
             total_peaks, total_ovals = [], []
-            for row in range(rows):
-                for col in range(columns):
+            for row in range(tile_rows):
+                for col in range(tile_columns):
+                    check_cancelled(cancel_event)
+                    log(f"Detecting tile {row * tile_columns + col + 1}/{tile_rows * tile_columns}.\n")
                     path = extended_dir / f"{row}_{col}.bmp"
                     tile = cv2.imread(str(path))
                     if tile is None:
@@ -360,18 +459,21 @@ class AppLogic:
                     stitched[y:y + h, x:x + w] = tile
                     total_peaks.append(peaks)
                     total_ovals.append(ovals)
-            peaks, ovals = np.concatenate(total_peaks), np.concatenate(total_ovals)
-        except (OSError, TypeError, ValueError, cv2.error) as exc:
-            self.log(f"Batch detection error: {exc}\n")
+            return dw, dh, stitched, np.concatenate(total_peaks), np.concatenate(total_ovals)
+
+        def finish(result):
+            dw, dh, stitched, peaks, ovals = result
+            self.app.bdw_var.set(str(dw))
+            self.app.bdh_var.set(str(dh))
+            self._remember_results(stitched, key, None, config.pixel_size, peaks, ovals)
+            self.log(f"Batch detection: {len(peaks)} peaks | {format_pit_status_summary(summarize_pit_statuses(ovals))}\n")
+            self.display_results(stitched, peaks, ovals, config.pixel_size)
+
+        return self._execute_job("Batch Detect", compute, finish, background)
+
+    def replace_detection(self, *, background=False):
+        if self.busy:
             return
-
-        self.app.bdw_var.set(str(dw))
-        self.app.bdh_var.set(str(dh))
-        self._remember_results(stitched, key, None, config.pixel_size, peaks, ovals)
-        self.log(f"Batch detection: {len(peaks)} peaks | {format_pit_status_summary(summarize_pit_statuses(ovals))}\n")
-        self.display_results(stitched, peaks, ovals, config.pixel_size)
-
-    def replace_detection(self):
         try:
             pixel_size = self._check_result_scale()
             if self._result_bbox is None or self._full_tile is None:
@@ -382,26 +484,39 @@ class AppLogic:
                 raise ValueError("Replacement bounding box must be within the previously detected region.")
             config = self._build_detection_config(self._image_key[-1])
             roi = self._full_tile[y1:y2, x1:x2]
-            new_peaks, new_ovals = self._run_detection(roi, config)
+            image = self._result_image
+            key = self._image_key
+            bbox = self._result_bbox
+            old_peaks, old_ovals = self.app.peaks, self.app.ovals
         except (TypeError, ValueError, cv2.error) as exc:
             self.log(f"Replace detection error: {exc}\n")
             return
 
         x, y = x1 - bx, y1 - by
-        new_peaks[:, :2] += (x, y)
-        new_ovals[:, :2] += (x, y)
         x_end, y_end = x2 - bx, y2 - by
 
         def inside(peaks):
             px, py = peaks.T
             return (x <= px) & (px < x_end) & (y <= py) & (py < y_end)
 
-        keep = ~inside(self.app.peaks)
-        insert = inside(new_peaks)
-        peaks = np.concatenate((self.app.peaks[keep], new_peaks[insert]))
-        ovals = np.concatenate((self.app.ovals[keep], new_ovals[insert]))
-        self._remember_results(self._result_image, self._image_key, self._result_bbox, pixel_size, peaks, ovals)
-        self.display_results(self._result_image, peaks, ovals, pixel_size)
+        def compute(cancel_event, log):
+            new_peaks, new_ovals = self._run_detection(roi, config, cancel_event, log)
+            check_cancelled(cancel_event)
+            new_peaks[:, :2] += (x, y)
+            new_ovals[:, :2] += (x, y)
+            keep = ~inside(old_peaks)
+            insert = inside(new_peaks)
+            return (
+                np.concatenate((old_peaks[keep], new_peaks[insert])),
+                np.concatenate((old_ovals[keep], new_ovals[insert])),
+            )
+
+        def finish(result):
+            peaks, ovals = result
+            self._remember_results(image, key, bbox, pixel_size, peaks, ovals)
+            self.display_results(image, peaks, ovals, pixel_size)
+
+        return self._execute_job("Replace Detect", compute, finish, background)
 
     def _build_detection_config(self, rate):
         extended_pixel_size = self._pixel_size(rate)
@@ -433,7 +548,9 @@ class AppLogic:
             use_cuda=self.app.use_cuda_var.get() == "True",
         ).validate()
 
-    def detect_pits(self, display=True):
+    def detect_pits(self, display=True, *, background=False):
+        if self.busy:
+            return
         if self.app.extended_img is None:
             self.log("No extended image found! Please slice & show an image first.\n")
             return
@@ -442,24 +559,33 @@ class AppLogic:
             key = self._check_loaded_image()
             config = self._build_detection_config(key[-1])
             img_bgr = self.app.extended_img
-            peaks, fitted_ovals = self._run_detection(img_bgr, config)
+            bbox = self._selected_bbox
         except (TypeError, ValueError, cv2.error) as exc:
             self.log(f"Parameter error: {exc}\n")
             return
 
-        self._remember_results(img_bgr, key, self._selected_bbox, config.pixel_size, peaks, fitted_ovals)
-        if display:
-            self.display_results(img_bgr, peaks, fitted_ovals, config.pixel_size)
-        return True
+        def compute(cancel_event, log):
+            return self._run_detection(img_bgr, config, cancel_event, log)
 
-    def _run_detection(self, img_bgr, config):
+        def finish(result):
+            peaks, fitted_ovals = result
+            self._remember_results(img_bgr, key, bbox, config.pixel_size, peaks, fitted_ovals)
+            if display:
+                self.display_results(img_bgr, peaks, fitted_ovals, config.pixel_size)
+
+        return self._execute_job("Detect Pits", compute, finish, background)
+
+    def _run_detection(self, img_bgr, config, cancel_event, log):
         t0 = time.time()
 
-        detector = PitDetector(**config.as_detector_kwargs())
+        check_cancelled(cancel_event)
+        detector = PitDetector(
+            **config.as_detector_kwargs(), cancel_event=cancel_event, progress=log,
+        )
         backend_message = f"Backend: {detector.backend_name}"
         if detector.cuda_fallback_reason:
             backend_message += f" (CUDA fallback: {detector.cuda_fallback_reason})"
-        self.log(backend_message + "\n")
+        log(backend_message + "\n")
 
         # Run detection
         peaks, fitted_ovals = detector.detect(img_bgr)
@@ -468,21 +594,21 @@ class AppLogic:
 
         status_counts = summarize_pit_statuses(fitted_ovals)
         valid_count = status_counts.get(0, 0)
-        self.log(
+        log(
             f"Detection time: {dt:.3f}s\n"
             f"Found {len(peaks)} peaks; {valid_count} valid pits\n"
             f"Status summary: {format_pit_status_summary(status_counts)}\n"
         )
         fit_failures = detector.last_diagnostics.get("fit_failure_counts", {})
         if any(fit_failures.values()):
-            self.log(
+            log(
                 "Fit failure details: "
                 + ", ".join(f"{name}={count}" for name, count in fit_failures.items())
                 + "\n"
             )
         center_fallback_count = detector.last_diagnostics.get("center_fallback_count", 0)
         if center_fallback_count:
-            self.log(
+            log(
                 "Center fallback: "
                 f"{center_fallback_count} fitted centers exceeded eps_allowed_center_offset; "
                 "their detected peak centers were used instead.\n"

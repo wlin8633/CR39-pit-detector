@@ -91,6 +91,8 @@ class PitDetectionNotebookApp:
         # Create the separate window for image display (initially hidden)
         self.image_window = None
         self.result_window = None
+        self._disabled_controls = []
+        self._closing = False
 
         # Override the close event so we can auto‐save before exit
         self.master.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -103,8 +105,34 @@ class PitDetectionNotebookApp:
         else:
             self.image_window.deiconify()
 
+    def set_job_controls(self, busy):
+        for page in (self.page_slicing, self.page_detection):
+            page.stop_button.state(["!disabled" if busy else "disabled"])
+            if busy:
+                for widget in page.frame.winfo_children():
+                    if widget is page.stop_button:
+                        continue
+                    if isinstance(widget, (ttk.Button, ttk.Entry, ttk.Radiobutton, ttk.Combobox, ttk.Checkbutton)):
+                        if not widget.instate(["disabled"]):
+                            widget.state(["disabled"])
+                            self._disabled_controls.append(widget)
+        if not busy:
+            for widget in self._disabled_controls:
+                widget.state(["!disabled"])
+            self._disabled_controls.clear()
+
     def on_close(self):
-        """Called when the user attempts to close the window."""
+        if self._closing:
+            return
+        self._closing = True
+        self.logic.stop()
+        self._close_after_job()
+
+    def _close_after_job(self):
+        """Wait for cancellation before saving settings and closing Tk."""
+        if self.logic.busy:
+            self.master.after(40, self._close_after_job)
+            return
         try:
             self.logic.auto_save(self.AUTOSAVE_FILE)
         except Exception as exc:

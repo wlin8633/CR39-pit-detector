@@ -89,6 +89,7 @@ These change only the overlay, not the numerical fit.
   physical full diameters, image azimuth, status, pixel size, and conventions.
 - **Save Status / Load Status**: save a new `.cr39state` or load a new state/trusted legacy `.sav`.
 - **Batch Detect**: process the configured slice grid. Validate a small representative region first because memory use scales with the stitched image size.
+- **Stop** is available on both tabs during Detect Pits, Replace Detect, Batch Detect, and image slicing. It requests cancellation at the next safe checkpoint. The current NumPy, OpenCV, or CUDA call may need to finish first. A stopped job keeps the last completed measurements and overlay. Wait for the stopped message before starting another job.
 
 ## 4. Pit Detection page
 

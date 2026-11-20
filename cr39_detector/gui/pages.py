@@ -78,14 +78,16 @@ class PageSlicing:
 
         rowp += 1
         # Buttons
-        ttk.Button(self.frame, text="Reset Image", command=self.logic.reset_image).grid(row=rowp, column=0, pady=5)
-        ttk.Button(self.frame, text="Update Image", command=self.logic.update_image).grid(row=rowp, column=1, pady=5)
+        ttk.Button(self.frame, text="Reset Image", command=lambda: self.logic.reset_image(background=True)).grid(row=rowp, column=0, pady=5)
+        ttk.Button(self.frame, text="Update Image", command=lambda: self.logic.update_image(background=True)).grid(row=rowp, column=1, pady=5)
         ttk.Button(self.frame, text="Open Canvas Window", command=self.logic.open_canvas_window).grid(row=rowp, column=2, pady=5)
+        self.stop_button = ttk.Button(self.frame, text="Stop", command=self.logic.stop, state="disabled")
+        self.stop_button.grid(row=rowp, column=3, padx=5, pady=5)
 
         rowp += 1
         # Buttons to Save / Load
-        ttk.Button(self.frame, text="Detect Pits", command=self.logic.detect_pits).grid(row=rowp, column=0, padx=5, pady=5)
-        ttk.Button(self.frame, text="Replace Detect", command=self.logic.replace_detection).grid(row=rowp, column=1, padx=5, pady=5)
+        ttk.Button(self.frame, text="Detect Pits", command=lambda: self.logic.detect_pits(background=True)).grid(row=rowp, column=0, padx=5, pady=5)
+        ttk.Button(self.frame, text="Replace Detect", command=lambda: self.logic.replace_detection(background=True)).grid(row=rowp, column=1, padx=5, pady=5)
         ttk.Button(self.frame, text="Show Display", command=self.logic.show_current_results).grid(row=rowp, column=2, padx=5, pady=5)
         ttk.Button(self.frame, text="Save Display", command=self.logic.save_results).grid(row=rowp, column=3, padx=5, pady=5)
 
@@ -94,7 +96,7 @@ class PageSlicing:
         ttk.Button(self.frame, text="Save Status", command=self.logic.save_parameters).grid(row=rowp, column=1, pady=5)
 
         rowp += 1
-        ttk.Button(self.frame, text="Batch Detect", command=self.logic.batch_detect).grid(row=rowp, column=0, padx=5, pady=5)
+        ttk.Button(self.frame, text="Batch Detect", command=lambda: self.logic.batch_detect(background=True)).grid(row=rowp, column=0, padx=5, pady=5)
         ttk.Button(self.frame, text="Save Measurements", command=self.logic.save_measurements).grid(row=rowp, column=1, padx=5, pady=5)
 
         rowp += 1
@@ -197,7 +199,9 @@ class PageDetection:
         ttk.Entry(self.frame, textvariable=self.app.use_cuda_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
         rowp += 1
-        ttk.Button(self.frame, text="Detect Pits", command=self.logic.detect_pits).grid(row=rowp, column=3, padx=5, pady=5)
+        ttk.Button(self.frame, text="Detect Pits", command=lambda: self.logic.detect_pits(background=True)).grid(row=rowp, column=3, padx=5, pady=5)
+        self.stop_button = ttk.Button(self.frame, text="Stop", command=self.logic.stop, state="disabled")
+        self.stop_button.grid(row=rowp, column=2, padx=5, pady=5)
 
         rowp += 1
         help_frame = ttk.LabelFrame(self.frame, text="Fit diagnostics")

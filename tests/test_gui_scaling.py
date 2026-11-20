@@ -1,7 +1,10 @@
 """Exercise image and fit geometry through the GUI callbacks without Tk windows."""
 
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
+from threading import Event, get_ident
+from time import monotonic, sleep
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -10,6 +13,7 @@ import cv2
 import numpy as np
 
 from cr39_detector.gui import logic as gui
+from cr39_detector import PitDetector
 from cr39_detector.state import load_state_bundle
 
 
@@ -49,6 +53,19 @@ class GuiScalingTests(unittest.TestCase):
         self.logic = gui.AppLogic(self.app)
         self.logic.log = Mock()
         self.logic.display_results = Mock()
+        self.callbacks = Queue()
+        self.app.master = SimpleNamespace(after=lambda delay, fn: self.callbacks.put(fn))
+        self.app.set_job_controls = Mock()
+
+    def finish_background_job(self):
+        deadline = monotonic() + 8
+        while monotonic() < deadline:
+            self.callbacks.get(timeout=5)()
+            if not self.logic.busy:
+                self.app.set_job_controls.assert_called_with(False)
+                return
+            sleep(0.01)
+        self.fail("The background job did not finish")
 
     def test_changed_rate_requires_reset_and_leaves_roi_untouched(self):
         self.logic.update_image()
@@ -122,6 +139,78 @@ class GuiScalingTests(unittest.TestCase):
         restored.show_current_results()
         np.testing.assert_array_equal(restored.display_results.call_args.args[0], stitched)
         np.testing.assert_array_equal(self.app.extended_img, selected)
+
+    def test_stop_during_ellipse_fit_preserves_previous_result_and_allows_retry(self):
+        self.logic.update_image()
+        self.assertTrue(self.logic.detect_pits())
+        previous_ovals = self.app.ovals
+        self.app.display_img = self.app.extended_img.copy()
+        previous_display = self.app.display_img
+        y, x = np.indices((128, 128))
+        pit = np.where((x - 64)**2 + (y - 64)**2 < 8**2, 25, 185).astype(np.uint8)
+        self.app.extended_img = np.repeat(pit[..., None], 3, axis=2)
+        self.app.peak_edge_std_var.set("1")
+        fitting = Event()
+        main_thread = get_ident()
+
+        def pause_in_fit(detector, *args):
+            self.assertNotEqual(get_ident(), main_thread)
+            fitting.set()
+            self.assertTrue(detector.cancel_event.wait(5))
+            gui.check_cancelled(detector.cancel_event)
+
+        with patch.object(PitDetector, "_fit_ovals", pause_in_fit):
+            self.assertTrue(self.logic.detect_pits(background=True))
+            try:
+                self.assertTrue(fitting.wait(5), "The detector never reached ellipse fitting")
+                self.assertTrue(self.logic.busy)
+                self.app.set_job_controls.assert_called_with(True)
+                self.assertIsNone(self.logic.detect_pits(background=True))
+            finally:
+                self.logic.stop()
+                self.finish_background_job()
+        self.assertIn("Detect Pits stopped", self.logic.log.call_args.args[0])
+        self.assertIs(self.app.ovals, previous_ovals)
+        self.assertIs(self.app.display_img, previous_display)
+
+        self.assertTrue(self.logic.detect_pits(background=True))
+        self.finish_background_job()
+        self.assertIsNot(self.app.ovals, previous_ovals)
+        self.assertGreater(len(self.app.ovals), 0)
+        background_peaks, background_ovals = self.app.peaks, self.app.ovals
+        self.assertTrue(self.logic.detect_pits())
+        np.testing.assert_array_equal(self.app.peaks, background_peaks)
+        np.testing.assert_allclose(self.app.ovals, background_ovals)
+
+    def test_cancel_replace_and_reset_discard_completed_worker_values(self):
+        self.logic.update_image()
+        self.assertTrue(self.logic.detect_pits())
+        previous_ovals = self.app.ovals
+        previous_tile = self.logic._full_tile
+        previous_roi = self.app.extended_img
+        for action, method, returned in (
+            (self.logic.replace_detection, "_run_detection", (np.empty((0, 2)), np.empty((0, 6)))),
+            (self.logic.reset_image, "_prepare_tile", (np.empty((8, 8, 3), np.uint8), 1, 1)),
+        ):
+            entered = Event()
+
+            def complete_after_stop(*args):
+                cancel_event = args[2] if method == "_run_detection" else args[1]
+                entered.set()
+                self.assertTrue(cancel_event.wait(5))
+                return returned
+
+            with patch.object(self.logic, method, side_effect=complete_after_stop):
+                self.assertTrue(action(background=True))
+                try:
+                    self.assertTrue(entered.wait(5))
+                finally:
+                    self.logic.stop()
+                    self.finish_background_job()
+            self.assertIs(self.app.ovals, previous_ovals)
+            self.assertIs(self.logic._full_tile, previous_tile)
+            self.assertIs(self.app.extended_img, previous_roi)
+            self.assertEqual(self.app.x2_var.get(), "0.5")
 
 
 if __name__ == "__main__":

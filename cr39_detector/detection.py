@@ -33,6 +33,15 @@ def parse_extension_rate(value):
     return rate
 
 
+class DetectionCancelled(Exception):
+    """A detection or slicing operation stopped at a cancellation checkpoint."""
+
+
+def check_cancelled(cancel_event):
+    if cancel_event is not None and cancel_event.is_set():
+        raise DetectionCancelled
+
+
 def _extend_tile(tile, rate, x, y):
     """Resample a tile on the same isotropic grid as the whole image."""
     if rate == 1:
@@ -107,7 +116,9 @@ class PitDetector:
                  mfp_std=7,
                  timeout=60,
                  verbose=True,
-                 use_cuda=True):
+                 use_cuda=True,
+                 cancel_event=None,
+                 progress=None):
         """
         Initializes the PitDetector with configuration parameters.
         """
@@ -132,6 +143,8 @@ class PitDetector:
         self.mfp_std = mfp_std
         self.timeout = timeout
         self.verbose = verbose
+        self.cancel_event = cancel_event
+        self.progress = progress
         self.last_diagnostics = {}
         self.backend_name = "numpy"
         self.cuda_fallback_reason = None
@@ -170,7 +183,9 @@ class PitDetector:
                              remove_existing=True,
                              sliced_image_dir=None,
                              extend_image_dir=None,
-                             extended_rate=None):
+                             extended_rate=None,
+                             *,
+                             cancel_event=None):
         """
         Slices a large image into smaller tiles of size (desired_height, desired_width),
         optionally up-samples them by 'extended_rate', and saves them to disk.
@@ -186,6 +201,7 @@ class PitDetector:
 
         Returns: scale_x, scale_y for the image.
         """
+        check_cancelled(cancel_event)
         height, width, _ = image.shape
         if desired_width < 1 or desired_height < 1:
             raise ValueError("Slice width and height must be positive")
@@ -212,16 +228,19 @@ class PitDetector:
 
         for row, y in enumerate(range(0, height, desired_height)):
             for col, x in enumerate(range(0, width, desired_width)):
+                check_cancelled(cancel_event)
                 tile = image[y:y + desired_height, x:x + desired_width]
                 name = f"{row}_{col}.bmp"
                 slice_path = os.path.join(sliced_image_dir, name)
                 if not cv2.imwrite(slice_path, tile):
                     raise OSError(f"Could not write image: {slice_path}")
                 if rate is not None and extend_image_dir is not None:
+                    check_cancelled(cancel_event)
                     extended_path = os.path.join(extend_image_dir, name)
                     if not cv2.imwrite(extended_path, _extend_tile(tile, rate, x, y)):
                         raise OSError(f"Could not write image: {extended_path}")
 
+        check_cancelled(cancel_event)
         return scale_x, scale_y
 
     @staticmethod
@@ -286,6 +305,7 @@ class PitDetector:
             )
             thresholds = self.xp.zeros(N, dtype=self.xp.float32)
             for i in range(N):
+                check_cancelled(self.cancel_event)
                 h = histograms[i]
                 best_idx = self._otsu_from_hist(h)
                 thresholds[i] = best_idx
@@ -348,6 +368,7 @@ class PitDetector:
 
         step = 0
         while True:
+            check_cancelled(self.cancel_event)
             if step >= max_steps: break
             valid_mask = (y_coords[:, step] >= 0) & (y_coords[:, step] < mask.shape[0]) & \
                          (x_coords[:, step] >= 0) & (x_coords[:, step] < mask.shape[1])
@@ -376,6 +397,18 @@ class PitDetector:
         Find the overlapping peaks within a distance.
         """
         sq_norms = self.xp.sum(peaks * peaks, axis=1, keepdims=True)
+        if self.cancel_event is not None:
+            columns = self.xp.arange(len(peaks))
+            matches = []
+            for start in range(0, len(peaks), 128):
+                check_cancelled(self.cancel_event)
+                end = min(start + 128, len(peaks))
+                dist_sq = sq_norms[start:end] - 2 * peaks[start:end] @ peaks.T + sq_norms.T
+                upper = columns[None, :] > columns[start:end, None]
+                pairs = self.xp.argwhere(upper & (dist_sq > 0) & (dist_sq <= distance**2))
+                pairs[:, 0] += start
+                matches.append(pairs)
+            return self.xp.concatenate(matches, axis=0)
         dist_sq = sq_norms - 2 * peaks @ peaks.T + sq_norms.T
         dist_sq = self.xp.maximum(dist_sq, 0)
         D = self.xp.sqrt(dist_sq)
@@ -409,6 +442,7 @@ class PitDetector:
         det = (peak_pairs[:, :, 1].T - seg_m.T[0] * peak_pairs[:, :, 0].T - seg_b.T[0]).T
 
         for i in range(len(overlap_peaks)):
+            check_cancelled(self.cancel_event)
             if self.xp.isinf(det[i, 0]):
                 norm[overlap_peaks[i, 0]] = self.xp.where((xx[overlap_peaks[i, 0]] - seg_b[i, 0]) < 0, norm[overlap_peaks[i, 0]], self.xp.inf)
                 norm[overlap_peaks[i, 1]] = self.xp.where((xx[overlap_peaks[i, 1]] - seg_b[i, 1]) > 0, norm[overlap_peaks[i, 1]], self.xp.inf)
@@ -455,6 +489,7 @@ class PitDetector:
         # Collect all valid points for each peak
         x_list, y_list = [], []
         for i in range(len(peaks)):
+            check_cancelled(self.cancel_event)
             mask_ij = product_thre[i]
             x_list.append(xx[i][mask_ij])
             y_list.append(yy[i][mask_ij])
@@ -463,24 +498,25 @@ class PitDetector:
         X_pad = np.full((num_peaks, max_len), np.nan, dtype=np.float64)
         Y_pad = np.full((num_peaks, max_len), np.nan, dtype=np.float64)
         for i, (xi, yi) in enumerate(zip(x_list, y_list)):
+            check_cancelled(self.cancel_event)
             X_pad[i, :len(xi)] = xi.get() if hasattr(xi, 'get') else xi
             Y_pad[i, :len(yi)] = yi.get() if hasattr(yi, 'get') else yi
         valid_mask = ~np.isnan(X_pad)
-        X_design = np.zeros((num_peaks, max_len, 6), dtype=np.float64)
-        X_design[:, :, 0] = np.where(valid_mask, X_pad**2, 0)
-        X_design[:, :, 1] = np.where(valid_mask, X_pad*Y_pad, 0)
-        X_design[:, :, 2] = np.where(valid_mask, Y_pad**2, 0)
-        X_design[:, :, 3] = np.where(valid_mask, X_pad, 0)
-        X_design[:, :, 4] = np.where(valid_mask, Y_pad, 0)
-        X_design[:, :, 5] = np.where(valid_mask, 1, 0)
-        Y_target = np.zeros((num_peaks, max_len), dtype=np.float64)
-        X_design[~valid_mask] = 0
-        try:
-            params = batch_least_squares_general(X_design, Y_target)
-        except Exception as e:
-            print(f"Batch ellipse fit failed: {e}")
-            self.last_diagnostics["batch_fit_error"] = str(e)
-            params = np.full((num_peaks, 6), np.nan)
+        params = np.full((num_peaks, 6), np.nan)
+        chunk_size = 32 if self.cancel_event is not None else num_peaks
+        # A contour set with no selected pixels cannot be passed to the SVD.
+        for start in range(0, num_peaks if max_len else 0, chunk_size):
+            check_cancelled(self.cancel_event)
+            chunk = slice(start, start + chunk_size)
+            x, y = X_pad[chunk], Y_pad[chunk]
+            mask = valid_mask[chunk]
+            design = np.stack((x**2, x*y, y**2, x, y, np.ones_like(x)), axis=-1)
+            design[~mask] = 0
+            try:
+                params[chunk] = batch_least_squares_general(design, None)
+            except np.linalg.LinAlgError as exc:
+                print(f"Batch ellipse fit failed: {exc}")
+                self.last_diagnostics["batch_fit_error"] = str(exc)
         A_ = params[:, 0]
         B_ = params[:, 1]
         C__ = params[:, 2]
@@ -504,6 +540,7 @@ class PitDetector:
         b_val = np.full(num_peaks, np.nan)
         theta_val = np.full(num_peaks, np.nan)
         for i in range(num_peaks):
+            check_cancelled(self.cancel_event)
             if not valid[i]:
                 continue
             xi, yi = X_pad[i][valid_mask[i]], Y_pad[i][valid_mask[i]]
@@ -538,14 +575,13 @@ class PitDetector:
         label = np.full(num_peaks, -1, dtype=np.float64)  # Default: invalid
         valid_idx = np.where(valid & ~np.isnan(a_val) & ~np.isnan(b_val))[0]
         if len(valid_idx) > 0 and self.eps_RMS_thre is not None:
-            # Prepare all points for all valid ellipses
-            all_points = [np.column_stack((X_pad[i][valid_mask[i]], Y_pad[i][valid_mask[i]])) for i in valid_idx]
-            # Compute RMS for all valid ellipses
-            rms_vals = np.array([
-                RMS_distance_vectorized(
+            rms_vals = np.empty(len(valid_idx))
+            for index, i in enumerate(valid_idx):
+                check_cancelled(self.cancel_event)
+                pts = np.column_stack((X_pad[i][valid_mask[i]], Y_pad[i][valid_mask[i]]))
+                rms_vals[index] = RMS_distance_vectorized(
                     pts, center_x[i], center_y[i], a_val[i], b_val[i], theta_val[i]
-                ) for i, pts in zip(valid_idx, all_points)
-            ])
+                )
             # Assign label -3 if RMS too large, else 0
             label[valid_idx] = np.where(rms_vals / self.pixel_size / np.sqrt(a_val[valid_idx] * b_val[valid_idx]) > self.eps_RMS_thre / 100, -3, 0)
         else:
@@ -579,6 +615,7 @@ class PitDetector:
         loop_start = time.time()
         print("Start edge connection...")
         while True:
+            check_cancelled(self.cancel_event)
             dilated = self.xp.roll(edge_connected,1,0)|self.xp.roll(edge_connected,-1,0)| \
                       self.xp.roll(edge_connected,1,1)|self.xp.roll(edge_connected,-1,1)
             dilated &= det_rad
@@ -601,6 +638,7 @@ class PitDetector:
         """
         int_radii = self.xp.zeros((len(peaks), charac_len_px))
         for r in range(1, charac_len_px + 1):
+            check_cancelled(self.cancel_event)
             ring_mask = (dist_sq_template <= r**2) & (dist_sq_template > (r-1)**2)
             int_radii[:, r-1] = self.xp.sum(det_rad_ROIs[:, ring_mask], axis=1) / (2 * self.xp.pi * r)
 
@@ -621,11 +659,13 @@ class PitDetector:
         """
         Radii detection for ellipse mode.
         """
+        check_cancelled(self.cancel_event)
         max_radius_px = int(np.ceil(self.eps_charac_len / self.pixel_size).item())
         yy, xx = self.xp.meshgrid(self.xp.arange(-max_radius_px, max_radius_px+1), self.xp.arange(-max_radius_px, max_radius_px+1), indexing='ij')
         yy, xx = yy + peaks[:, 1, None, None], xx + peaks[:, 0, None, None]
 
         overlap_peaks = self._find_overlap_peaks(peaks, 2 * max_radius_px)
+        check_cancelled(self.cancel_event)
         peak_pairs = peaks[overlap_peaks]
         lines = self._pit_separation_line(peak_pairs)
         seg_m = self.xp.column_stack([lines[:, 0], lines[:, 0]])
@@ -636,7 +676,16 @@ class PitDetector:
         thre_otsu = self._otsu_threshold(product, batch=True)
         product_thre_precent = 100 - self.xp.sum(product > thre_otsu[:, None, None], axis=(1,2)) / (product.shape[1]*product.shape[2]) * 100 + self.eps_product_thre_offset
         product_thre_precent = self.xp.clip(product_thre_precent, 0, 100)
-        thre_vals = self.xp.diag(self.xp.percentile(product, product_thre_precent, axis=(1,2)))
+        # Each candidate needs only its own percentile. Group equal percentiles
+        # so the temporary result stays linear in the number of candidates.
+        thre_vals = self.xp.empty(len(peaks), dtype=self.xp.float64)
+        for level in self.xp.unique(product_thre_precent):
+            check_cancelled(self.cancel_event)
+            group = self.xp.flatnonzero(product_thre_precent == level)
+            for start in range(0, len(group), 32):
+                check_cancelled(self.cancel_event)
+                rows = group[start:start + 32]
+                thre_vals[rows] = self.xp.percentile(product[rows], float(level), axis=(1, 2))
         product_thre = product > thre_vals[:, None, None]
 
         fitted_ovals = self._fit_ovals(peaks, product_thre, xx, yy)
@@ -680,6 +729,7 @@ class PitDetector:
             print(f"{len(peaks)} ROIs created with size {2*charac_len_px}x{2*charac_len_px}. Processing...")
 
         for i in range(len(peaks)):
+            check_cancelled(self.cancel_event)
             det_rad_ROIs[i, pady0[i]:2*charac_len_px-pady1[i], padx0[i]:2*charac_len_px-padx1[i]] = det_rad[ROI_y0[i]:ROI_y1[i], ROI_x0[i]:ROI_x1[i]]
 
         return self._fit_circles(det_rad_ROIs, peaks, charac_len_px, min_r, max_r, dist_sq_template, ROI_x0[0], ROI_y0[0])
@@ -693,6 +743,7 @@ class PitDetector:
         azimuth_rad, status)``.  Coordinates refer to the fitted extended
         image with origin at its upper-left corner; x points right and y down.
         """
+        check_cancelled(self.cancel_event)
         self.last_diagnostics = {}
         if self.mode not in ['ellipse', 'circle']:
             print("Please specify a valid mode: 'ellipse' or 'circle'")
@@ -739,6 +790,7 @@ class PitDetector:
         dx, dy = (extension_length * self.xp.cos(angles)).astype(self.xp.int32), (extension_length * self.xp.sin(angles)).astype(self.xp.int32)
         extended_edges = self._parallel_bresenham(extended_contour.shape, edge_points, dx, dy, dtype=self.xp.float32)
 
+        check_cancelled(self.cancel_event)
         smoothed_edges = self.gaussian_filter(extended_edges, sigma=self.peak_gaussian_sigma)
         local_max = self.maximum_filter(smoothed_edges, size=int(self.peak_closest_dist/self.pixel_size))
         peaks_mask = (smoothed_edges == local_max) & (extended_edges > 0)
@@ -757,6 +809,9 @@ class PitDetector:
             self.last_diagnostics["status_counts"] = {}
             return peaks, fitted_ovals
 
+        check_cancelled(self.cancel_event)
+        if self.progress is not None:
+            self.progress(f"Fitting {len(peaks)} candidate pits ({self.mode}).\n")
         if self.mode == 'ellipse':
             fitted_ovals = self._ellipse_radii_detection(peaks, sobelx, sobely)
         elif self.mode == 'circle':
@@ -772,6 +827,7 @@ class PitDetector:
             good_peaks = peaks[good_mask]
             peak_density = self.xp.zeros_like(gpu_gray, dtype=self.xp.float32)
             for pk in good_peaks:
+                check_cancelled(self.cancel_event)
                 px, py = int(pk[0].item()), int(pk[1].item())
                 if 0 <= px < peak_density.shape[1] and 0 <= py < peak_density.shape[0]:
                     peak_density[py, px] += 1
@@ -788,6 +844,7 @@ class PitDetector:
                 smoothed_density = self.gaussian_filter(peak_density, sigma=peak_density_thre_sigma)
                 dense_regions = smoothed_density > (smoothed_density.mean() + self.mfp_std*smoothed_density.std())
                 for i, pk in enumerate(good_peaks):
+                    check_cancelled(self.cancel_event)
                     px, py = int(pk[0].item()), int(pk[1].item())
                     if 0 <= px < dense_regions.shape[1] and 0 <= py < dense_regions.shape[0] and dense_regions[py, px]:
                         global_idx = self.xp.argwhere(good_mask).ravel()[i]
@@ -797,5 +854,6 @@ class PitDetector:
             n_valid = self.xp.sum(fitted_ovals[:,5]==0)
             print(f"Total peaks: {len(peaks)}, valid pits: {int(n_valid.item())}")
 
+        check_cancelled(self.cancel_event)
         self.last_diagnostics["status_counts"] = summarize_pit_statuses(fitted_ovals)
         return peaks, fitted_ovals

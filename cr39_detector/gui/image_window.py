@@ -87,6 +87,8 @@ class ImageDisplayWindow(tk.Toplevel):
     # Mouse events for bounding box
     # ------------------------------------------------------------------------
     def on_button_press(self, event):
+        if self.parent_app.logic.busy:
+            return
         self.start_x = event.x
         self.start_y = event.y
         if self.rect_id:
@@ -94,6 +96,8 @@ class ImageDisplayWindow(tk.Toplevel):
             self.rect_id = None
 
     def on_move_press(self, event):
+        if self.parent_app.logic.busy:
+            return
         if self.start_x is None or self.start_y is None:
             return
         cur_x, cur_y = event.x, event.y
@@ -102,6 +106,9 @@ class ImageDisplayWindow(tk.Toplevel):
         self.rect_id = self.canvas.create_rectangle(self.start_x, self.start_y, cur_x, cur_y, outline='red')
 
     def on_button_release(self, event):
+        if self.parent_app.logic.busy:
+            self.start_x = self.start_y = None
+            return
         if self.start_x is None or self.start_y is None:
             return
         x1c = min(self.start_x, event.x)
