@@ -20,7 +20,6 @@ class PitDetectionNotebookApp:
         # ---------------------------------------------------------------------
         self.AUTOSAVE_FILE = str(DEFAULT_AUTOSAVE_PATH)
         self.extended_img = None
-        self.old_ext_img = None
         self.bbox_mode = tk.StringVar(value="Fraction")
         self.x1_var = tk.StringVar(value="0")
         self.y1_var = tk.StringVar(value="0")

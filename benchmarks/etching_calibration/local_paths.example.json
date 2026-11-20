@@ -1,0 +1,33 @@
+{
+  "rel_npz": "../../savFiles_etchingModel/REL_x_E_ω0350.npz",
+  "range_npz": "../../savFiles_etchingModel/R0_E_ω0350.npz",
+  "experimental_pickle": "C:/absolute/path/to/Results/pit_size_vs_energy.sav",
+  "geant4_output_folder": "C:/absolute/path/to/CR39-dataset",
+  "detection_results_folder": "C:/absolute/path/to/Results",
+  "detection_state_folder": "C:/absolute/path/to/CR39det",
+  "reference_npz": "../../savFiles_etchingModel/to2MeV-etching_rate_ratio_fit_results.npz",
+  "output_directory": "output",
+  "selection_start_index": 22,
+  "experimental_axis_source_unit": "m",
+  "experimental_axis_scale_to_um": 1000000.0,
+  "experimental_axis_convention": "ellipse semiaxes from fitted ovals[:, 2:4]",
+  "experimental_axis_multiplier_for_fit": 1.0,
+  "experimental_axis_multiplier_note": "1.0 reproduces the legacy fit; use 2.0 for a physically matched full-diameter refit",
+  "bulk_etch_rate_um_per_h": 1.68,
+  "bulk_etch_rate_reported_um_per_h": 1.684,
+  "bulk_etch_rate_reported_uncertainty_um_per_h": 0.004,
+  "etch_time_h": 0.5,
+  "rel_unit": "MeV/cm",
+  "restriction_energy_eV": 350.0,
+  "theta_reference": "detector surface; pi/2 is normal incidence",
+  "lookup_energy_range": [0.0, 8.0, 0.08],
+  "lookup_theta_range_rad": [0.0, 1.5707963267948966, 0.015707963267948967],
+  "curve_fit": {
+    "p0": [0.0001, 1.5, 1.5707963267948966],
+    "lower_bounds": [0.0, 0.0, 0.0],
+    "upper_bounds": [1.0, 3.0, 1.5707963267948966],
+    "x_scale": [0.0001, 1.0, 1.0],
+    "optimizer_verbose": 0,
+    "maxfev": 10000
+  }
+}

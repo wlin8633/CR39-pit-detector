@@ -33,7 +33,64 @@ from scipy.ndimage import minimum_filter
 from .io import get_data_from_Geant4_output, get_data_from_GetData
 from .paths import ETCHING_DATA_DIR, absolute_path
 
-__all__ = ["EtchingTrackRatioFitter", "R0_extraction", "REL_x_E_extraction"]
+__all__ = [
+    "EtchingTrackRatioFitter",
+    "R0_extraction",
+    "REL_x_E_extraction",
+    "fit_quality_metrics",
+]
+
+
+_REL_FROM_MEV_PER_M = {
+    "MeV/m": 1.0,
+    "MeV/cm": 1.0e-2,
+    "MeV/mm": 1.0e-3,
+    "keV/um": 1.0e-3,
+}
+
+
+def fit_quality_metrics(observed_a, observed_b, predicted_a, predicted_b):
+    """Return residual metrics for major and minor full-diameter data."""
+    arrays = [
+        np.asarray(value, dtype=float)
+        for value in (observed_a, observed_b, predicted_a, predicted_b)
+    ]
+    if any(array.shape != arrays[0].shape for array in arrays[1:]):
+        raise ValueError("Observed and predicted axis arrays must share one shape")
+
+    results = {}
+    residuals = []
+    for label, observed, predicted in zip(
+        ("a", "b"),
+        arrays[:2],
+        arrays[2:],
+    ):
+        residual = predicted - observed
+        residuals.append(residual)
+        finite = np.isfinite(observed) & np.isfinite(predicted)
+        if not finite.any():
+            for name in ("rmse_um", "mae_um", "bias_um", "relative_rmse", "r2"):
+                results[f"{label}_{name}"] = np.nan
+            continue
+        obs = observed[finite]
+        res = residual[finite]
+        rss = np.sum(res**2)
+        tss = np.sum((obs - obs.mean())**2)
+        results[f"{label}_rmse_um"] = np.sqrt(np.mean(res**2))
+        results[f"{label}_mae_um"] = np.mean(np.abs(res))
+        results[f"{label}_bias_um"] = np.mean(res)
+        results[f"{label}_relative_rmse"] = (
+            results[f"{label}_rmse_um"] / np.mean(np.abs(obs))
+        )
+        results[f"{label}_r2"] = 1.0 - rss / tss if tss > 0 else np.nan
+
+    combined = np.concatenate(residuals)
+    finite = np.isfinite(combined)
+    results["combined_rmse_um"] = (
+        np.sqrt(np.mean(combined[finite]**2)) if finite.any() else np.nan
+    )
+    results["fit_finite_fraction"] = float(np.mean(finite))
+    return results
 # %% ----------------------------------------------------------------------
 # ---> Build data from Geant4 Simulation
 # -------------------------------------------------------------------------
@@ -180,11 +237,32 @@ def R0_extraction(
 # ---> EtchingTrackRatioFitter Class
 # -------------------------------------------------------------------------
 class EtchingTrackRatioFitter:
-    def __init__(self, REL_data=None, R0_data=None, exp_data=None):
+    """Fit and evaluate the CR-39 pit-formation forward model.
+
+    Conventions
+    -----------
+    ``REL_data[0]`` is the Geant4-derived array stored in MeV/m. ``rel_unit``
+    selects the unit used inside ``V = 1 + alpha * REL**beta``.  The default,
+    MeV/cm, preserves the numerical convention of the legacy workflow.
+
+    ``compute_a_b`` returns full major and minor diameters in micrometres. Its
+    ``theta`` is measured from the detector surface, so pi/2 is normal
+    incidence. This angle is not the in-plane ellipse azimuth returned by the
+    image detector.
+    """
+
+    def __init__(self, REL_data=None, R0_data=None, exp_data=None, rel_unit="MeV/cm"):
+        if rel_unit not in _REL_FROM_MEV_PER_M:
+            supported = ", ".join(_REL_FROM_MEV_PER_M)
+            raise ValueError(f"Unsupported REL unit {rel_unit!r}; use one of: {supported}")
+        self.rel_unit = rel_unit
+        self.last_nonfinite_count = 0
         if REL_data is None or R0_data is None or exp_data is None:
             self.fit_results = None
         else:
-            self.REL_x_E, self.x, self.E_for_REL = REL_data[0]/1e2, REL_data[1]*1e6, REL_data[2] # unit: MeV, um, MeV
+            self.REL_x_E = np.asarray(REL_data[0]) * _REL_FROM_MEV_PER_M[rel_unit]
+            self.x = np.asarray(REL_data[1]) * 1e6
+            self.E_for_REL = np.asarray(REL_data[2])
             self.R0_E, self.E_for_R0 = R0_data[0]*1e6, R0_data[1]  # unit: m, MeV
             self.E_exp, self.a_exp, self.b_exp, self.h_exp = exp_data
             if np.isscalar(self.h_exp):
@@ -193,6 +271,11 @@ class EtchingTrackRatioFitter:
             self.fit_results = None
 
     def compute_a_b(self, alpha, beta, theta, Em, hm, x0_reso=10000, output_verbose=False):
+        """Return full pit diameters ``a`` and ``b`` in micrometres.
+
+        ``theta`` is the track angle from the detector surface. Therefore,
+        ``theta = pi/2`` represents normal incidence.
+        """
         REL_x_E, x, E_for_REL = self.REL_x_E, self.x, self.E_for_REL
         R0_E, E_for_R0 = self.R0_E, self.E_for_R0
         # --- Create interpolators based on alphai and betai ---
@@ -232,7 +315,8 @@ class EtchingTrackRatioFitter:
         # --- Calculate the x(x0), y(x0) based on V(x, E) ---
         x0 = np.linspace(0, R0(Em), x0_reso)  # unit: um
         xx = x0 + ( (hm - hh(x0, Em))*invV(x0, Em) ).T  # x(x0)
-        yy = ( (hm - hh(x0, Em))*invV(x0, Em)*np.sqrt(V(x0, Em)**2 - 1.0) ).T  # y(x0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            yy = ( (hm - hh(x0, Em))*invV(x0, Em)*np.sqrt(V(x0, Em)**2 - 1.0) ).T  # y(x0)
         xx_cond = (xx > x0)
         xx[~xx_cond] = np.nan
         yy[np.isnan(xx)] = np.nan
@@ -246,10 +330,11 @@ class EtchingTrackRatioFitter:
         x01[idx1] = x0[idy1] + (-P1[idx1, idy1]) / (P1[idx1, idy1] - P1[idx1, idy1+1]) * (x0[idy1+1] - x0[idy1])
         x02[idx2] = x0[idy2] + (-P2[idx2, idy2]) / (P2[idx2, idy2] - P2[idx2, idy2+1]) * (x0[idy2+1] - x0[idy2])
 
-        y1 = flat_nested((hm - hh(x01, Em).T)*invV(x01, Em).T*np.sqrt((V(x01, Em).T)**2 - 1.0))
-        y2 = flat_nested((hm - hh(x02, Em).T)*invV(x02, Em).T*np.sqrt((V(x02, Em).T)**2 - 1.0))
-        a = (y1+y2) / np.sin(theta)
-        b = 2*np.sqrt(y1*y2)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            y1 = flat_nested((hm - hh(x01, Em).T)*invV(x01, Em).T*np.sqrt((V(x01, Em).T)**2 - 1.0))
+            y2 = flat_nested((hm - hh(x02, Em).T)*invV(x02, Em).T*np.sqrt((V(x02, Em).T)**2 - 1.0))
+            a = (y1+y2) / np.sin(theta)
+            b = 2*np.sqrt(y1*y2)
         if not output_verbose:
             return a, b
         else:
@@ -267,85 +352,199 @@ class EtchingTrackRatioFitter:
             return comp_results
 
     def model(self, E_array, alpha, beta, theta):
-        E_array = np.asarray(E_array)
-        a_model = np.zeros_like(E_array)
-        b_model = np.zeros_like(E_array)
+        E_array = np.asarray(E_array, dtype=float)
+        a_model = np.zeros_like(E_array, dtype=float)
+        b_model = np.zeros_like(E_array, dtype=float)
         for i, E in enumerate(E_array):
             a_i, b_i = self.compute_a_b(alpha, beta, theta, E, self.h_exp)
             a_model[i] = a_i
             b_model[i] = b_i
         model_output = np.concatenate([a_model, b_model])
-        if not np.all(np.isfinite(model_output)):
-            print(f"Non-finite model output for alpha={alpha}, beta={beta}, theta={theta}")
+        self.last_nonfinite_count = int(np.count_nonzero(~np.isfinite(model_output)))
         return model_output
 
-    def fit(self, curve_fit_params, verbose=True, return_ab=True, return_ab_E_range=(None, None, None), return_ab_theta_range=(0, np.pi/2, None), is_save=False, save_path=None):
-        E_exp, a_exp, b_exp, h_exp = self.E_exp, self.a_exp, self.b_exp, self.h_exp
-        xdata = E_exp
-        ydata = np.concatenate([a_exp, b_exp])
-        if verbose:
-            start = time.time()
-        popt, pcov = curve_fit(lambda E, alpha, beta, theta: self.model(E, alpha, beta, theta), xdata, ydata, **curve_fit_params)
+    def fit_parameters(self, curve_fit_params, verbose=True):
+        """Fit alpha, beta, and theta without generating curves or meshes."""
+        xdata = self.E_exp
+        ydata = np.concatenate([self.a_exp, self.b_exp])
+        start = time.time()
+        popt, pcov = curve_fit(
+            lambda E, alpha, beta, theta: self.model(E, alpha, beta, theta),
+            xdata,
+            ydata,
+            **curve_fit_params,
+        )
         alpha_fit, beta_fit, theta_fit = popt
         alpha_dev, beta_dev, theta_dev = np.sqrt(np.diag(pcov))
-        if verbose:
-            print(f"alpha = {alpha_fit:.3e}, beta = {beta_fit:.3f}, theta = {np.degrees(theta_fit):.2f} deg")
-            print(f"alpha_dev = {alpha_dev:.3e}, beta_dev = {beta_dev:.3f}, theta_dev = {np.degrees(theta_dev):.2f} deg")
-            print(f"time taken: {time.time() - start:.2f} seconds")
-        if verbose:
-            print("Fitting completed successfully. Now generating fitting results.")
-        E_for_REL = self.E_for_REL
-        ab_fit = self.model(E_for_REL, alpha_fit, beta_fit, theta_fit)
-        a_fit = ab_fit[:len(E_for_REL)]  # Major axis (a)
-        b_fit = ab_fit[len(E_for_REL):]  # Minor axis (b)
-        Results = {
+        results = {
             "alpha_fit": alpha_fit,
             "beta_fit": beta_fit,
             "theta_fit": theta_fit,
             "alpha_dev": alpha_dev,
             "beta_dev": beta_dev,
             "theta_dev": theta_dev,
-            "E_fit": E_for_REL,
-            "a_fit": a_fit,
-            "b_fit": b_fit,
+            "parameter_covariance": pcov,
         }
+        self.fit_results = results
+        self.evaluate_fit_quality(results, verbose=verbose)
+        if verbose:
+            print(f"alpha = {alpha_fit:.3e}, beta = {beta_fit:.3f}, theta = {np.degrees(theta_fit):.2f} deg")
+            print(f"alpha_dev = {alpha_dev:.3e}, beta_dev = {beta_dev:.3f}, theta_dev = {np.degrees(theta_dev):.2f} deg")
+            print(f"Parameter fitting completed in {time.time() - start:.2f} seconds.")
+        return results
+
+    def evaluate_fit_quality(self, results=None, verbose=True):
+        """Evaluate the fitted parameters at the experimental calibration points."""
+        results = self.fit_results if results is None else results
+        if results is None:
+            raise ValueError("No fit results available. Run fit_parameters() first.")
+        prediction = self.model(
+            self.E_exp,
+            results["alpha_fit"],
+            results["beta_fit"],
+            results["theta_fit"],
+        )
+        n = len(self.E_exp)
+        results["a_exp_pred"] = prediction[:n]
+        results["b_exp_pred"] = prediction[n:]
+        results["a_residual_um"] = results["a_exp_pred"] - self.a_exp
+        results["b_residual_um"] = results["b_exp_pred"] - self.b_exp
+        results.update(
+            fit_quality_metrics(
+                self.a_exp,
+                self.b_exp,
+                results["a_exp_pred"],
+                results["b_exp_pred"],
+            )
+        )
+        if "parameter_covariance" in results:
+            covariance = np.asarray(results["parameter_covariance"], dtype=float)
+            deviations = np.sqrt(np.diag(covariance))
+            with np.errstate(invalid="ignore", divide="ignore"):
+                correlation = covariance / np.outer(deviations, deviations)
+            results["parameter_correlation"] = correlation
+            off_diagonal = correlation[~np.eye(len(correlation), dtype=bool)]
+            results["max_abs_parameter_correlation"] = np.nanmax(np.abs(off_diagonal))
+            results["alpha_relative_uncertainty"] = (
+                deviations[0] / abs(float(results["alpha_fit"]))
+            )
+        if verbose:
+            print(
+                "Fit quality: "
+                f"major RMSE={results['a_rmse_um']:.4g} um, R2={results['a_r2']:.4g}; "
+                f"minor RMSE={results['b_rmse_um']:.4g} um, R2={results['b_r2']:.4g}; "
+                f"combined RMSE={results['combined_rmse_um']:.4g} um."
+            )
+        self.fit_results = results
+        return results
+
+    def generate_forward_curve(self, results=None, energies=None, verbose=True):
+        """Add the energy-dependent forward curve to fitted results."""
+        results = self.fit_results if results is None else results
+        if results is None:
+            raise ValueError("No fit results available. Run fit_parameters() first.")
+        energies = self.E_for_REL if energies is None else np.asarray(energies, dtype=float)
+        if verbose:
+            print(f"Generating a {len(energies)}-point forward curve.")
+        start = time.time()
+        ab_fit = self.model(
+            energies,
+            results["alpha_fit"],
+            results["beta_fit"],
+            results["theta_fit"],
+        )
+        results["E_fit"] = energies
+        results["a_fit"] = ab_fit[:len(energies)]
+        results["b_fit"] = ab_fit[len(energies):]
+        if verbose:
+            print(
+                f"Forward curve completed in {time.time() - start:.2f} seconds "
+                f"({self.last_nonfinite_count} non-finite values outside the valid model domain)."
+            )
+        self.fit_results = results
+        return results
+
+    def generate_lookup_mesh(
+        self,
+        results=None,
+        energy_range=(None, None, None),
+        theta_range=(0, np.pi/2, None),
+        verbose=True,
+    ):
+        """Add an energy-angle lookup mesh to fitted results.
+
+        This is usually the slowest stage and is intentionally separate from
+        parameter fitting so a successful fit can be saved first.
+        """
+        results = self.fit_results if results is None else results
+        if results is None:
+            raise ValueError("No fit results available. Run fit_parameters() first.")
+        E_for_REL = self.E_for_REL
+        E_start = energy_range[0] if energy_range[0] is not None else E_for_REL[0]
+        E_stop = energy_range[1] if energy_range[1] is not None else E_for_REL[-1]
+        E_step = energy_range[2] if energy_range[2] is not None else (E_for_REL[1] - E_for_REL[0])
+        E_fit = np.arange(E_start, E_stop + E_step, E_step)
+        theta_start = theta_range[0] if theta_range[0] is not None else 0
+        theta_stop = theta_range[1] if theta_range[1] is not None else np.pi/2
+        theta_step = theta_range[2] if theta_range[2] is not None else (np.pi/2) / len(E_for_REL)
+        theta_fit = np.arange(theta_start, theta_stop + theta_step, theta_step)
+        E_mesh, theta_mesh = np.meshgrid(E_fit, theta_fit, indexing="ij")
+        if verbose:
+            print(
+                f"Generating a {len(E_fit)} x {len(theta_fit)} energy-angle lookup mesh. "
+                "This stage can take tens of minutes."
+            )
+        start = time.time()
+        ab_E_theta = np.zeros((len(E_fit), len(theta_fit), 2), dtype=float)
+        for i, theta in enumerate(theta_fit):
+            ab_fit = self.model(E_fit, results["alpha_fit"], results["beta_fit"], theta)
+            ab_E_theta[:, i, 0] = ab_fit[:len(E_fit)]
+            ab_E_theta[:, i, 1] = ab_fit[len(E_fit):]
+        results["E_mesh"] = E_mesh
+        results["theta_mesh"] = theta_mesh
+        results["a_mesh"] = ab_E_theta[:, :, 0]
+        results["b_mesh"] = ab_E_theta[:, :, 1]
+        finite = np.isfinite(results["a_mesh"]) & np.isfinite(results["b_mesh"])
+        if verbose:
+            print(
+                f"Lookup mesh completed in {time.time() - start:.2f} seconds; "
+                f"{int(finite.sum())}/{finite.size} points are inside the valid model domain."
+            )
+        self.fit_results = results
+        return results
+
+    def save_results(self, save_path=None, results=None, metadata=None, verbose=True):
+        """Save fit products and optional scalar/string provenance metadata."""
+        results = self.fit_results if results is None else results
+        if results is None:
+            raise ValueError("No fit results available to save.")
+        if save_path is None:
+            save_path = ETCHING_DATA_DIR / "etching_rate_ratio_fit_results.npz"
+        save_path = absolute_path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(results)
+        if metadata:
+            payload.update({key: np.asarray(value) for key, value in metadata.items()})
+        np.savez(str(save_path), **payload)
+        if verbose:
+            print(f"Results saved to {save_path}")
+        return save_path
+
+    def fit(self, curve_fit_params, verbose=True, return_ab=True, return_ab_E_range=(None, None, None), return_ab_theta_range=(0, np.pi/2, None), is_save=False, save_path=None):
+        Results = self.fit_parameters(curve_fit_params, verbose=verbose)
+        Results = self.generate_forward_curve(Results, verbose=verbose)
         if return_ab:
-            if verbose:
-                print("Returning fitted a and b values versus energy and theta.")
-            E_start = return_ab_E_range[0] if return_ab_E_range[0] is not None else E_for_REL[0]
-            E_stop  = return_ab_E_range[1] if return_ab_E_range[1] is not None else E_for_REL[-1]
-            E_step = return_ab_E_range[2] if return_ab_E_range[2] is not None else (E_for_REL[1] - E_for_REL[0])
-            E_fit = np.arange(E_start, E_stop + E_step, E_step)
-            theta_start = return_ab_theta_range[0] if return_ab_theta_range[0] is not None else 0
-            theta_stop  = return_ab_theta_range[1] if return_ab_theta_range[1] is not None else np.pi/2
-            theta_step = return_ab_theta_range[2] if return_ab_theta_range[2] is not None else (np.pi/2) / len(E_for_REL)
-            theta_fit = np.arange(theta_start, theta_stop + theta_step, theta_step)
-            E_mesh, theta_mesh = np.meshgrid(E_fit, theta_fit, indexing='ij')
-            start = time.time()
-            ab_E_theta = np.zeros((len(E_fit), len(theta_fit), 2))  # shape (N, M, 2) for a and b
-            for i in range(len(theta_fit)):
-                ab_fit = self.model(E_fit, alpha_fit, beta_fit, theta_fit[i])
-                ab_E_theta[:, i, 0] = ab_fit[:len(E_fit)]  # a_fit
-                ab_E_theta[:, i, 1] = ab_fit[len(E_fit):]  # b_fit
-            a_mesh = ab_E_theta[:, :, 0]
-            b_mesh = ab_E_theta[:, :, 1]
-            Results["E_mesh"] = E_mesh
-            Results["theta_mesh"] = theta_mesh
-            Results["a_mesh"] = a_mesh
-            Results["b_mesh"] = b_mesh
-            if verbose:
-                print(f"Constructed a and b meshes in {time.time() - start:.2f} seconds.")
+            Results = self.generate_lookup_mesh(
+                Results,
+                energy_range=return_ab_E_range,
+                theta_range=return_ab_theta_range,
+                verbose=verbose,
+            )
         else:
             if verbose:
-                print("Returning only fitted parameters without a and b meshes.")
+                print("Skipping the optional energy-angle lookup mesh.")
         if is_save:
-            if save_path is None:
-                save_path = ETCHING_DATA_DIR / "etching_rate_ratio_fit_results.npz"
-            save_path = absolute_path(save_path)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(str(save_path), **Results)
-            if verbose:
-                print(f"Results saved to {save_path}")
+            self.save_results(save_path, Results, verbose=verbose)
         self.fit_results = Results
         return Results
 

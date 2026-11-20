@@ -1,4 +1,5 @@
 # %%
+import math
 import os
 import shutil
 import time
@@ -22,6 +23,33 @@ __all__ = [
     "summarize_pit_statuses",
     "to_numpy",
 ]
+
+
+def parse_extension_rate(value):
+    """Validate the uniform enlargement used for both image axes."""
+    rate = float(value)
+    if not math.isfinite(rate) or rate < 1:
+        raise ValueError("extended_rate must be a finite number >= 1")
+    return rate
+
+
+def _extend_tile(tile, rate, x, y):
+    """Resample a tile on the same isotropic grid as the whole image."""
+    if rate == 1:
+        return tile
+    height, width = tile.shape[:2]
+    left, top = round(x * rate), round(y * rate)
+    size = (round((x + width) * rate) - left, round((y + height) * rate) - top)
+    if size == (width * rate, height * rate) and (left, top) == (x * rate, y * rate):
+        return cv2.resize(tile, size, interpolation=cv2.INTER_CUBIC)
+    # The half-pixel translation matches OpenCV's resize pixel-center convention.
+    transform = np.array([
+        [rate, 0, x * rate - left + (rate - 1) / 2],
+        [0, rate, y * rate - top + (rate - 1) / 2],
+    ])
+    return cv2.warpAffine(
+        tile, transform, size, flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE,
+    )
 
 def batch_least_squares_general(X, Y):
     """
@@ -146,7 +174,7 @@ class PitDetector:
         """
         Slices a large image into smaller tiles of size (desired_height, desired_width),
         optionally up-samples them by 'extended_rate', and saves them to disk.
-        Uses Cupy for minimal overhead, but the main image read/resize (cv2) still uses CPU.
+        Edge tiles retain their actual size. Slicing does not resize the raw image.
 
         image: Loaded by cv2, shape (H, W, C).
         desired_width: width of slice in pixels.
@@ -154,11 +182,14 @@ class PitDetector:
         remove_existing: whether to remove existing directory before saving.
         sliced_image_dir: folder to save the sliced images.
         extend_image_dir: folder to save the extended (zoomed) images.
-        extended_rate: scale factor for up-sampling. E.g., 2 => 2x dimension.
+        extended_rate: uniform enlargement factor, e.g. 1.2, 1.5, or 2.
 
         Returns: scale_x, scale_y for the image.
         """
         height, width, _ = image.shape
+        if desired_width < 1 or desired_height < 1:
+            raise ValueError("Slice width and height must be positive")
+        rate = None if extended_rate is None else parse_extension_rate(extended_rate)
 
         if sliced_image_dir is not None:
             sliced_image_dir = str(safe_generated_directory(sliced_image_dir))
@@ -167,53 +198,29 @@ class PitDetector:
         if sliced_image_dir is not None and sliced_image_dir == extend_image_dir:
             raise ValueError("sliced_image_dir and extend_image_dir must be different")
 
-        # Cupy usage to compute scale_x, scale_y
-        scale_x = np.ceil(width / desired_width).item()
-        scale_y = np.ceil(height / desired_height).item()
-
-        # Resizing the image is still on CPU
-        res_height = int(desired_height * scale_y)
-        res_width  = int(desired_width * scale_x)
-        image_resized = cv2.resize(image, (res_width, res_height))
-
-        if remove_existing:
-            shutil.rmtree(sliced_image_dir, ignore_errors=True)
-            shutil.rmtree(extend_image_dir, ignore_errors=True)
-
-        if sliced_image_dir is not None:
-            os.makedirs(sliced_image_dir, exist_ok=True)
-        else:
+        scale_x = math.ceil(width / desired_width)
+        scale_y = math.ceil(height / desired_height)
+        if sliced_image_dir is None:
             print("No sliced image directory specified. Exiting...")
             return scale_x, scale_y
 
-        if extend_image_dir is not None:
-            os.makedirs(extend_image_dir, exist_ok=True)
-        else:
-            print("No extended image directory specified. Skipping...")
+        for directory in (sliced_image_dir, extend_image_dir):
+            if directory is not None:
+                if remove_existing:
+                    shutil.rmtree(directory, ignore_errors=True)
+                os.makedirs(directory, exist_ok=True)
 
-        # Slice and optionally up-sample
-        for i in range(0, res_height, desired_height):
-            for j in range(0, res_width, desired_width):
-                slice_ij = image_resized[i:i+desired_height, j:j+desired_width]
-
-                # Save the slices
-                slice_path = os.path.join(sliced_image_dir,
-                                f"{int(i/desired_height)}_{int(j/desired_width)}.bmp")
-                cv2.imwrite(slice_path, slice_ij)
-
-                if extended_rate is not None and extend_image_dir is not None:
-                    slice_ij_extended = cv2.resize(slice_ij,
-                                                   (desired_width * extended_rate,
-                                                    desired_height * extended_rate),
-                                                   interpolation=cv2.INTER_CUBIC)
-                else:
-                    print("No extended rate or directory specified. Skipping...")
-                    return scale_x, scale_y
-
-                # Save the extended slices
-                extend_path = os.path.join(extend_image_dir,
-                                f"{int(i/desired_height)}_{int(j/desired_width)}.bmp")
-                cv2.imwrite(extend_path, slice_ij_extended)
+        for row, y in enumerate(range(0, height, desired_height)):
+            for col, x in enumerate(range(0, width, desired_width)):
+                tile = image[y:y + desired_height, x:x + desired_width]
+                name = f"{row}_{col}.bmp"
+                slice_path = os.path.join(sliced_image_dir, name)
+                if not cv2.imwrite(slice_path, tile):
+                    raise OSError(f"Could not write image: {slice_path}")
+                if rate is not None and extend_image_dir is not None:
+                    extended_path = os.path.join(extend_image_dir, name)
+                    if not cv2.imwrite(extended_path, _extend_tile(tile, rate, x, y)):
+                        raise OSError(f"Could not write image: {extended_path}")
 
         return scale_x, scale_y
 
@@ -423,7 +430,13 @@ class PitDetector:
 
     def _fit_ovals(self, peaks, product_thre, xx, yy):
         """
-        Fit ellipses to the detected peaks using batch least squares (vectorized), with vectorized post-processing.
+        Fit ellipses using batch least squares.
+
+        Columns 2 and 3 of the returned array are major and minor *semiaxes*
+        in fitted-image pixels.  They remain semiaxes because the ellipse
+        equation, OpenCV drawing, radius filtering, and RMS normalization all
+        use that internal convention.  Convert them to physical full
+        diameters with ``cr39_detector.fitted_oval_diameters``.
         """
         def RMS_distance_vectorized(points, h, k, a, b, theta, n_grid=1000):
             if len(points) == 0 or np.isnan(a) or np.isnan(b) or np.isnan(h) or np.isnan(k) or np.isnan(theta):
@@ -673,7 +686,12 @@ class PitDetector:
 
     def detect(self, img_bgr, bbox=None):
         """
-        Main detection pipeline.
+        Run the main detection pipeline.
+
+        Returns ``peaks`` as ``(x_px, y_px)`` and ``fitted_ovals`` as
+        ``(center_x_px, center_y_px, semi_major_px, semi_minor_px,
+        azimuth_rad, status)``.  Coordinates refer to the fitted extended
+        image with origin at its upper-left corner; x points right and y down.
         """
         self.last_diagnostics = {}
         if self.mode not in ['ellipse', 'circle']:

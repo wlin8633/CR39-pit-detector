@@ -95,6 +95,7 @@ class PageSlicing:
 
         rowp += 1
         ttk.Button(self.frame, text="Batch Detect", command=self.logic.batch_detect).grid(row=rowp, column=0, padx=5, pady=5)
+        ttk.Button(self.frame, text="Save Measurements", command=self.logic.save_measurements).grid(row=rowp, column=1, padx=5, pady=5)
 
         rowp += 1
         ttk.Label(self.frame, text="Batch scale w:").grid(row=rowp, column=0, sticky=tk.E)
@@ -125,24 +126,24 @@ class PageDetection:
         ttk.Entry(self.frame, textvariable=self.app.clips_to_bg_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
 
         rowp += 1
-        ttk.Label(self.frame, text="radius_min (m):").grid(row=rowp, column=0, sticky=tk.E)
+        ttk.Label(self.frame, text="semi_axis_min (m):").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.radius_min_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
-        ttk.Label(self.frame, text="radius_max (m):").grid(row=rowp, column=2, sticky=tk.E)
+        ttk.Label(self.frame, text="semi_axis_max (m):").grid(row=rowp, column=2, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.radius_max_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
 
         rowp += 1
         ttk.Label(self.frame, text="peak_charac_len (m):").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.peak_charac_len_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
-        ttk.Label(self.frame, text="peak_pad_rate:").grid(row=rowp, column=2, sticky=tk.E)
+        ttk.Label(self.frame, text="peak_pad_rate (ratio):").grid(row=rowp, column=2, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.peak_pad_rate_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
 
         rowp += 1
-        ttk.Label(self.frame, text="peak_thre_offset:").grid(row=rowp, column=0, sticky=tk.E)
+        ttk.Label(self.frame, text="peak_thre_offset (pp):").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.peak_thre_offset_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
-        ttk.Label(self.frame, text="peak_edge_std:").grid(row=rowp, column=2, sticky=tk.E)
+        ttk.Label(self.frame, text="peak_edge_std (sigma):").grid(row=rowp, column=2, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.peak_edge_std_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
 
         rowp += 1
@@ -153,14 +154,14 @@ class PageDetection:
         ttk.Entry(self.frame, textvariable=self.app.peak_dist_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
 
         rowp += 1
-        ttk.Label(self.frame, text="rad_charac_len (m):").grid(row=rowp, column=0, sticky=tk.E)
+        ttk.Label(self.frame, text="eps_charac_len (m):").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.eps_charac_len_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
         ttk.Label(self.frame, text="mode:").grid(row=rowp, column=2, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.mode_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
 
         rowp += 1
-        ttk.Label(self.frame, text="eps_product_thre_offset:").grid(row=rowp, column=0, sticky=tk.E)
+        ttk.Label(self.frame, text="eps_product_thre_offset (pp):").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.eps_product_thre_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
         ttk.Label(self.frame, text="eps_allowed_center_offset (m):").grid(row=rowp, column=2, sticky=tk.E)
@@ -170,18 +171,18 @@ class PageDetection:
         ttk.Label(self.frame, text="eps_RMS_thre (%):").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.eps_rms_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
-        ttk.Label(self.frame, text="cir_radii_thre_percent:").grid(row=rowp, column=2, sticky=tk.E)
+        ttk.Label(self.frame, text="circle_bg_threshold (%):").grid(row=rowp, column=2, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.cir_radii_thre_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
 
         rowp += 1
         ttk.Label(self.frame, text="mfp_detection:").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.mfp_detection_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
-        ttk.Label(self.frame, text="mfp:").grid(row=rowp, column=2, sticky=tk.E)
+        ttk.Label(self.frame, text="mfp (m):").grid(row=rowp, column=2, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.mfp_var, width=12).grid(row=rowp, column=3, padx=5, sticky=tk.W)
 
         rowp += 1
-        ttk.Label(self.frame, text="mfp_std:").grid(row=rowp, column=0, sticky=tk.E)
+        ttk.Label(self.frame, text="mfp_std (sigma):").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.mfp_std_var, width=12).grid(row=rowp, column=1, padx=5, sticky=tk.W)
 
         rowp += 1

@@ -9,11 +9,11 @@ from typing import Union
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_IMAGE_PATH = (PROJECT_ROOT / "example.bmp").resolve()
-DETECTION_WORK_DIR = (PROJECT_ROOT / "savFiles_pitDetection").resolve()
 ETCHING_DATA_DIR = (PROJECT_ROOT / "savFiles_etchingModel").resolve()
 
 _runtime_parent = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share"))
 RUNTIME_DIR = (_runtime_parent / "CR39PitDetector").resolve()
+DETECTION_WORK_DIR = (RUNTIME_DIR / "image_tiles").resolve()
 DEFAULT_AUTOSAVE_PATH = (RUNTIME_DIR / "autosave.cr39state").resolve()
 
 
