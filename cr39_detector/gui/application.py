@@ -1,6 +1,7 @@
 # %%
 import tkinter as tk
 from tkinter import ttk
+from ..detection import DEFAULT_EXTENSION_INTERPOLATION
 from ..paths import DEFAULT_AUTOSAVE_PATH, DEFAULT_IMAGE_PATH
 from .image_window import ImageDisplayWindow
 from .logic import AppLogic
@@ -33,6 +34,7 @@ class PitDetectionNotebookApp:
         self.bdw_var = tk.StringVar(value="2048")
         self.bdh_var = tk.StringVar(value="1536")
         self.ext_rate_var = tk.StringVar(value="2")
+        self.ext_interpolation_var = tk.StringVar(value=DEFAULT_EXTENSION_INTERPOLATION)
         self.scale_var = tk.StringVar(value="Scale: ")
         self.sh_var = tk.StringVar(value="0")
         self.sw_var = tk.StringVar(value="0")

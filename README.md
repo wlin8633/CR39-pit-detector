@@ -34,8 +34,9 @@ If Tkinter is missing, install a Python distribution that includes Tcl/Tk. No CU
 2. On **Image Slicing**, use **Browse** and select an image. The GUI stores and displays the resolved absolute path.
 3. For the bundled example, keep the initial slicing values and click **Update Image**.
 
-   Fractional extension rates such as `1.2` and `1.5` are supported. After
-   changing the image path, slice, dimensions, or extension rate, click
+   Fractional extension rates such as `1.2` and `1.5` are supported. Choose
+   **Extension interpolation**: **Cubic** (default) or **Linear**. After
+   changing the image path, slice, dimensions, extension rate, or interpolation, click
    **Reset Image**, then reapply any bounding box with **Update Image**.
 4. On **Pit Detection**, confirm the microscope resolution and physical radius range.
 5. Start with `eps_product_thre_offset = 7` and `eps_RMS_thre = 8`.

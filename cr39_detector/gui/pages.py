@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 
-from ..detection import PIT_STATUS_INFO
+from ..detection import EXTENSION_INTERPOLATIONS, PIT_STATUS_INFO
 
 class PageSlicing:
     def __init__(self, app, logic):
@@ -35,6 +35,13 @@ class PageSlicing:
 
         ttk.Label(self.frame, text="w:").grid(row=3, column=2, sticky=tk.W)
         ttk.Entry(self.frame, textvariable=self.app.sw_var, width=10).grid(row=3, column=2, sticky=tk.W, padx=25)
+
+        rowp += 1
+        ttk.Label(self.frame, text="Extension interpolation:").grid(row=rowp, column=0, sticky=tk.E)
+        ttk.Combobox(
+            self.frame, textvariable=self.app.ext_interpolation_var, values=tuple(EXTENSION_INTERPOLATIONS),
+            state="readonly", width=10,
+        ).grid(row=rowp, column=1, sticky=tk.W, padx=5)
 
         # Bbox mode
         rowp += 1

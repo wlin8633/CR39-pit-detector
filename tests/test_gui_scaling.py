@@ -14,7 +14,7 @@ import numpy as np
 
 from cr39_detector.gui import logic as gui
 from cr39_detector import PitDetector
-from cr39_detector.state import load_state_bundle
+from cr39_detector.state import load_state_bundle, save_state_bundle
 
 
 class Variable:
@@ -40,7 +40,7 @@ class GuiScalingTests(unittest.TestCase):
         self.assertTrue(cv2.imwrite(str(path), image))
         settings, _ = load_state_bundle("example_state.cr39state")
         settings.update(
-            path_var=str(path), ext_rate_var="1.5", dw_var="105", dh_var="103",
+            path_var=str(path), ext_rate_var="1.5", ext_interpolation_var="Cubic", dw_var="105", dh_var="103",
             sh_var="0", sw_var="0", bbox_mode="Fraction", x1_var="0", y1_var="0",
             x2_var="0.5", y2_var="0.5", use_cuda_var="False", verbose_var="False",
             bsw_var="2", bsh_var="2", obj_res_var="1.38e-7",
@@ -119,6 +119,70 @@ class GuiScalingTests(unittest.TestCase):
         np.testing.assert_array_equal(self.app.peaks, [[5, 5], [30, 30], [22, 23]])
         np.testing.assert_array_equal(self.app.ovals[:, :2], self.app.peaks)
         self.assertIs(self.logic.display_results.call_args.args[0], result_image)
+
+    def test_interpolation_change_requires_reset_and_survives_state_roundtrip(self):
+        path = self.app.path_var.get()
+        raw = np.full((103, 105, 3), 185, dtype=np.uint8)
+        cv2.circle(raw, (47, 44), 6, (30, 30, 30), -1)
+        self.assertTrue(cv2.imwrite(path, raw))
+        self.app.ext_rate_var.set("2")
+        self.logic.reset_image()
+        size = (210, 206)
+        cubic = cv2.resize(raw, size, interpolation=cv2.INTER_CUBIC)
+        linear = cv2.resize(raw, size, interpolation=cv2.INTER_LINEAR)
+        self.assertFalse(np.array_equal(cubic, linear))
+        np.testing.assert_array_equal(self.logic._full_tile, cubic)
+        self.assertTrue(self.logic.detect_pits())
+        previous = self.app.ovals
+        cubic_state = self.folder / "cubic.cr39state"
+        self.logic.save_parameters(cubic_state)
+
+        self.app.ext_interpolation_var.set("Linear")
+        for action in (self.logic.update_image, self.logic.detect_pits, self.logic.replace_detection,
+                       self.logic.batch_detect, self.logic.show_current_results):
+            action()
+            self.assertIn("Reset Image", self.logic.log.call_args.args[0])
+        self.assertIs(self.app.ovals, previous)
+        self.logic.reset_image()
+        self.assertIsNone(self.app.ovals)
+        np.testing.assert_array_equal(self.logic._full_tile, linear)
+        self.assertTrue(self.logic.detect_pits())
+        linear_state = self.folder / "linear.cr39state"
+        self.logic.save_parameters(linear_state)
+
+        self.app.ext_interpolation_var.set("Cubic")
+        self.logic.load_parameters(linear_state)
+        self.assertEqual(self.app.ext_interpolation_var.get(), "Linear")
+        self.assertEqual(self.logic._result_key.interpolation, "Linear")
+        np.testing.assert_array_equal(self.logic._full_tile, linear)
+        self.assertEqual(self.logic._check_result_scale(), 1.38e-7 / 2)
+
+        settings, arrays = load_state_bundle(cubic_state)
+        settings.pop("ext_interpolation_var")
+        for key in ("image_key", "result_key"):
+            settings[key] = settings[key][:6]
+        old_state = self.folder / "old.cr39state"
+        save_state_bundle(old_state, settings, arrays)
+        self.logic.load_parameters(old_state)
+        self.assertEqual(self.app.ext_interpolation_var.get(), "Cubic")
+        np.testing.assert_array_equal(self.logic._full_tile, cubic)
+        self.assertEqual(self.logic._check_result_scale(), 1.38e-7 / 2)
+
+    def test_batch_uses_selected_interpolation_for_fractional_edge_tile(self):
+        raw = np.full((103, 105, 3), 185, dtype=np.uint8)
+        raw[59:69, 54:68] = 30
+        self.assertTrue(cv2.imwrite(self.app.path_var.get(), raw))
+        self.app.ext_interpolation_var.set("Linear")
+        self.logic.update_image()
+        self.assertTrue(self.logic.batch_detect())
+        stitched = self.logic.display_results.call_args.args[0]
+        # The bottom-right raw tile starts at x=ceil(105/2), y=ceil(103/2).
+        result_x, result_y = round(53 * 1.5), round(52 * 1.5)
+        tile = raw[52:, 53:]
+        transform = np.array([[1.5, 0, 53 * 1.5 - result_x + 0.25], [0, 1.5, 0.25]])
+        size = (stitched.shape[1] - result_x, stitched.shape[0] - result_y)
+        expected = cv2.warpAffine(tile, transform, size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        np.testing.assert_array_equal(stitched[result_y:, result_x:], expected)
 
     def test_fractional_batch_stitches_odd_sized_tiles_and_restores_results(self):
         self.logic.update_image()

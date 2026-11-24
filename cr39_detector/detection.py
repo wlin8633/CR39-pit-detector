@@ -24,6 +24,9 @@ __all__ = [
     "to_numpy",
 ]
 
+EXTENSION_INTERPOLATIONS = {"Cubic": cv2.INTER_CUBIC, "Linear": cv2.INTER_LINEAR}
+DEFAULT_EXTENSION_INTERPOLATION = "Cubic"
+
 
 def parse_extension_rate(value):
     """Validate the uniform enlargement used for both image axes."""
@@ -31,6 +34,13 @@ def parse_extension_rate(value):
     if not math.isfinite(rate) or rate < 1:
         raise ValueError("extended_rate must be a finite number >= 1")
     return rate
+
+
+def parse_extension_interpolation(value):
+    name = str(value).strip().title()
+    if name not in EXTENSION_INTERPOLATIONS:
+        raise ValueError("Extension interpolation must be Cubic or Linear")
+    return name
 
 
 class DetectionCancelled(Exception):
@@ -42,7 +52,7 @@ def check_cancelled(cancel_event):
         raise DetectionCancelled
 
 
-def _extend_tile(tile, rate, x, y):
+def _extend_tile(tile, rate, x, y, interpolation):
     """Resample a tile on the same isotropic grid as the whole image."""
     if rate == 1:
         return tile
@@ -50,14 +60,14 @@ def _extend_tile(tile, rate, x, y):
     left, top = round(x * rate), round(y * rate)
     size = (round((x + width) * rate) - left, round((y + height) * rate) - top)
     if size == (width * rate, height * rate) and (left, top) == (x * rate, y * rate):
-        return cv2.resize(tile, size, interpolation=cv2.INTER_CUBIC)
+        return cv2.resize(tile, size, interpolation=interpolation)
     # The half-pixel translation matches OpenCV's resize pixel-center convention.
     transform = np.array([
         [rate, 0, x * rate - left + (rate - 1) / 2],
         [0, rate, y * rate - top + (rate - 1) / 2],
     ])
     return cv2.warpAffine(
-        tile, transform, size, flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE,
+        tile, transform, size, flags=interpolation, borderMode=cv2.BORDER_REPLICATE,
     )
 
 def batch_least_squares_general(X, Y):
@@ -185,6 +195,7 @@ class PitDetector:
                              extend_image_dir=None,
                              extended_rate=None,
                              *,
+                             interpolation=DEFAULT_EXTENSION_INTERPOLATION,
                              cancel_event=None):
         """
         Slices a large image into smaller tiles of size (desired_height, desired_width),
@@ -198,6 +209,7 @@ class PitDetector:
         sliced_image_dir: folder to save the sliced images.
         extend_image_dir: folder to save the extended (zoomed) images.
         extended_rate: uniform enlargement factor, e.g. 1.2, 1.5, or 2.
+        interpolation: "Cubic" (default) or "Linear" for image enlargement.
 
         Returns: scale_x, scale_y for the image.
         """
@@ -206,6 +218,7 @@ class PitDetector:
         if desired_width < 1 or desired_height < 1:
             raise ValueError("Slice width and height must be positive")
         rate = None if extended_rate is None else parse_extension_rate(extended_rate)
+        interpolation_flag = EXTENSION_INTERPOLATIONS[parse_extension_interpolation(interpolation)]
 
         if sliced_image_dir is not None:
             sliced_image_dir = str(safe_generated_directory(sliced_image_dir))
@@ -237,7 +250,7 @@ class PitDetector:
                 if rate is not None and extend_image_dir is not None:
                     check_cancelled(cancel_event)
                     extended_path = os.path.join(extend_image_dir, name)
-                    if not cv2.imwrite(extended_path, _extend_tile(tile, rate, x, y)):
+                    if not cv2.imwrite(extended_path, _extend_tile(tile, rate, x, y, interpolation_flag)):
                         raise OSError(f"Could not write image: {extended_path}")
 
         check_cancelled(cancel_event)

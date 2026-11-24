@@ -4,6 +4,7 @@ from threading import Event, Thread
 import time
 import tkinter as tk
 from tkinter import filedialog, ttk
+from typing import NamedTuple
 import cv2
 import numpy as np
 import matplotlib
@@ -16,11 +17,13 @@ from matplotlib.figure import Figure
 
 from ..config import DetectionConfig
 from ..detection import (
+    DEFAULT_EXTENSION_INTERPOLATION,
     DetectionCancelled,
     PIT_STATUS_INFO,
     PitDetector,
     check_cancelled,
     format_pit_status_summary,
+    parse_extension_interpolation,
     parse_extension_rate,
     summarize_pit_statuses,
     to_numpy,
@@ -36,7 +39,7 @@ from ..state import load_legacy_pickle, load_state_bundle, save_state_bundle
 
 GUI_SETTING_NAMES = (
     "bbox_mode", "x1_var", "y1_var", "x2_var", "y2_var", "path_var",
-    "dw_var", "dh_var", "bdw_var", "bdh_var", "ext_rate_var", "scale_var",
+    "dw_var", "dh_var", "bdw_var", "bdh_var", "ext_rate_var", "ext_interpolation_var", "scale_var",
     "sh_var", "sw_var", "bsh_var", "bsw_var", "obj_res_var",
     "radius_min_var", "radius_max_var", "bg_value_var", "clips_to_bg_var",
     "peak_pad_rate_var", "peak_charac_len_var", "peak_thre_offset_var",
@@ -46,6 +49,18 @@ GUI_SETTING_NAMES = (
     "mfp_std_var", "timeout_var", "verbose_var", "use_cuda_var",
     "centre_size", "edge_size", "font_size", "font_edge_size",
 )
+
+
+class ImageKey(NamedTuple):
+    path: str
+    width: int
+    height: int
+    row: int
+    column: int
+    rate: float
+    # The default also supplies the missing field in older six-entry state keys.
+    interpolation: str = DEFAULT_EXTENSION_INTERPOLATION
+
 
 class AppLogic:
     def __init__(self, app):
@@ -123,9 +138,10 @@ class AppLogic:
         width, height = int(self.app.dw_var.get()), int(self.app.dh_var.get())
         row, col = int(self.app.sh_var.get()), int(self.app.sw_var.get())
         rate = parse_extension_rate(self.app.ext_rate_var.get())
+        interpolation = parse_extension_interpolation(self.app.ext_interpolation_var.get())
         if min(width, height) < 1 or min(row, col) < 0:
             raise ValueError("Slice dimensions must be positive and indices non-negative")
-        return path, width, height, row, col, rate
+        return ImageKey(path, width, height, row, col, rate, interpolation)
 
     def _check_loaded_image(self):
         key = self._requested_image_key()
@@ -150,7 +166,7 @@ class AppLogic:
             raise ValueError("No detection results are available. Run Detect Pits first.")
         if key != self._result_key:
             raise ValueError("Image settings changed. Press Reset Image and run Detect Pits again.")
-        if self._pixel_size(key[-1]) != self._result_pixel_size:
+        if self._pixel_size(key.rate) != self._result_pixel_size:
             raise ValueError("Objective resolution changed. Run Detect Pits again before using these results.")
         return self._result_pixel_size
 
@@ -241,6 +257,7 @@ class AppLogic:
         else:
             settings, arrays = load_state_bundle(source)
 
+        settings.setdefault("ext_interpolation_var", DEFAULT_EXTENSION_INTERPOLATION)
         for name in GUI_SETTING_NAMES:
             if name not in settings:
                 continue
@@ -262,7 +279,7 @@ class AppLogic:
         self._selected_bbox = None
         self.app.extended_img = None
         if settings.get("image_key") and "full_tile" in arrays and settings.get("selected_bbox"):
-            self._image_key = tuple(settings["image_key"])
+            self._image_key = ImageKey(*settings["image_key"])
             self._full_tile = arrays["full_tile"]
             self._selected_bbox = tuple(settings["selected_bbox"])
             x1, y1, x2, y2 = self._selected_bbox
@@ -273,7 +290,7 @@ class AppLogic:
             and {"result_image", "peaks", "ovals"} <= arrays.keys()
         ):
             self._result_image = arrays["result_image"]
-            self._result_key = tuple(settings["result_key"])
+            self._result_key = ImageKey(*settings["result_key"])
             self._result_bbox = tuple(settings["result_bbox"]) if settings.get("result_bbox") else None
             self._result_pixel_size = settings["result_pixel_size_m"]
             self.app.peaks = arrays["peaks"]
@@ -325,7 +342,7 @@ class AppLogic:
         )
 
     def _prepare_tile(self, key, cancel_event=None):
-        path, dw, dh, sh, sw, er = key
+        path, dw, dh, sh, sw, er, interpolation = key
         check_cancelled(cancel_event)
         raw_img = cv2.imread(path)
         if raw_img is None:
@@ -336,6 +353,7 @@ class AppLogic:
         extended_dir = (DETECTION_WORK_DIR / "extended_images").resolve()
         scale_x, scale_y = PitDetector.slice_and_extend_img(
             raw_img, dw, dh, True, str(sliced_dir), str(extended_dir), er, cancel_event=cancel_event,
+            interpolation=interpolation,
         )
         extended_path = extended_dir / f"{sh}_{sw}.bmp"
         ext_img = cv2.imread(str(extended_path))
@@ -345,7 +363,7 @@ class AppLogic:
 
     def _load_prepared_tile(self, key, result):
         ext_img, scale_x, scale_y = result
-        path = key[0]
+        path = key.path
         self.app.path_var.set(path)
         self.app.scale_var.set(f"Scale: h{scale_y}, w{scale_x}")
         self._full_tile = ext_img
@@ -415,7 +433,7 @@ class AppLogic:
             return
         try:
             key = self._check_loaded_image()
-            config = self._build_detection_config(key[-1])
+            config = self._build_detection_config(key.rate)
             columns, rows = int(self.app.bsw_var.get()), int(self.app.bsh_var.get())
         except (TypeError, ValueError) as exc:
             self.log(f"Batch detection error: {exc}\n")
@@ -423,19 +441,19 @@ class AppLogic:
 
         def compute(cancel_event, log):
             check_cancelled(cancel_event)
-            raw = cv2.imread(key[0])
+            raw = cv2.imread(key.path)
             if raw is None:
-                raise ValueError(f"Could not load image: {key[0]}")
+                raise ValueError(f"Could not load image: {key.path}")
             height, width = raw.shape[:2]
             if not (1 <= columns <= width and 1 <= rows <= height):
                 raise ValueError("Batch grid dimensions must be positive and within the raw image")
             dw, dh = math.ceil(width / columns), math.ceil(height / rows)
-            rate = key[-1]
+            rate = key.rate
             sliced_dir = DETECTION_WORK_DIR / "batch" / "sliced_images"
             extended_dir = DETECTION_WORK_DIR / "batch" / "extended_images"
             tile_columns, tile_rows = PitDetector.slice_and_extend_img(
                 raw, dw, dh, True, str(sliced_dir), str(extended_dir), rate,
-                cancel_event=cancel_event,
+                interpolation=key.interpolation, cancel_event=cancel_event,
             )
 
             options = config.as_detector_kwargs()
@@ -482,7 +500,7 @@ class AppLogic:
             x1, y1, x2, y2 = self._requested_bbox()
             if not (bx <= x1 < x2 <= bx2 and by <= y1 < y2 <= by2):
                 raise ValueError("Replacement bounding box must be within the previously detected region.")
-            config = self._build_detection_config(self._image_key[-1])
+            config = self._build_detection_config(self._image_key.rate)
             roi = self._full_tile[y1:y2, x1:x2]
             image = self._result_image
             key = self._image_key
@@ -557,7 +575,7 @@ class AppLogic:
 
         try:
             key = self._check_loaded_image()
-            config = self._build_detection_config(key[-1])
+            config = self._build_detection_config(key.rate)
             img_bgr = self.app.extended_img
             bbox = self._selected_bbox
         except (TypeError, ValueError, cv2.error) as exc:

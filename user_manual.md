@@ -58,6 +58,7 @@ The autosave occurs during a normal GUI close and is loaded at the next startup.
 | **Raw Image Path** | absolute path | Microscope image in BMP, PNG, JPEG, or TIFF format |
 | `desired_width / desired_height` | raw-image pixels | Target size of one unextended slice |
 | `extended_rate` | dimensionless number ≥ 1 | Uniform enlargement, e.g. 1, 1.2, 1.5, or 2. One fitted-image pixel represents `objective_resolution / extended_rate` metres. |
+| Extension interpolation | method | **Cubic** (default) or **Linear**. Applies to single and batch slicing; no resampling occurs at rate 1. |
 | `slice h / w` | integer index | Row and column of the extended slice to open |
 | `Batch scale h / w` | integer count | Number of rows and columns processed by **Batch Detect** |
 
@@ -66,7 +67,9 @@ The autosave occurs during a normal GUI close and is loaded at the next startup.
 - **Fraction**: `x1, y1, x2, y2` are dimensionless fractions from 0 to 1.
 - **Absolute**: the values are pixel coordinates in the currently loaded extended image.
 
-Coordinates are sorted and clipped against the full extended tile. Repeating **Update Image** with the same bounding box selects the same area. After changing the image path, slice indices, slice dimensions, or extension rate, click **Reset Image** to load the new image. This restores the full bounding box and clears previous fits. Reapply the desired box with **Update Image** before detection.
+Coordinates are sorted and clipped against the full extended tile. Repeating **Update Image** with the same bounding box selects the same area. After changing the image path, slice indices, slice dimensions, extension rate, or interpolation, click **Reset Image** to load the new image. This restores the full bounding box and clears previous fits. Reapply the desired box with **Update Image** before detection.
+
+The interpolation method is saved with the analysis state. Older states without this setting use Cubic, the original behavior. Interpolation does not change the physical pixel scale or add optical detail, but it can change the pixel gradients, fitted contours, and pit counts. For a crowded field, compare both modes on the same raw image and ROI before changing the method used across a series.
 
 ### Display controls
 
