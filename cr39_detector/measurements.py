@@ -8,6 +8,7 @@ RMS normalization.  Scientific outputs use full diameters in metres.
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 import numpy as np
@@ -84,8 +85,18 @@ def fitted_ovals_to_measurements(fitted_ovals, pixel_size_m, accepted_only=False
     return table
 
 
-def save_measurements_csv(path, fitted_ovals, pixel_size_m, accepted_only=False):
+def save_measurements_csv(path, fitted_ovals, pixel_size_m, accepted_only=False, *, metadata=None,
+                          manual_excluded=None):
     """Atomically save detector measurements with units in every column name."""
+    if manual_excluded is not None:
+        fitted_ovals = to_numpy(fitted_ovals)
+        manual_excluded = np.asarray(manual_excluded, dtype=bool)
+        if manual_excluded.shape != (len(fitted_ovals),):
+            raise ValueError("Manual exclusion flags must match the number of detector rows")
+        if accepted_only:
+            keep = (fitted_ovals[:, 5] == 0) & ~manual_excluded
+            fitted_ovals, manual_excluded = fitted_ovals[keep], manual_excluded[keep]
+            accepted_only = False
     table = fitted_ovals_to_measurements(
         fitted_ovals,
         pixel_size_m,
@@ -106,23 +117,29 @@ def save_measurements_csv(path, fitted_ovals, pixel_size_m, accepted_only=False)
             table["status"],
         ]
     )
-    header = "\n".join(
-        [
+    header_items = [
             f"pixel_size_m={float(pixel_size_m):.17g}",
             f"internal_axis_convention={INTERNAL_OVAL_AXIS_CONVENTION}",
             f"physical_axis_convention={PHYSICAL_AXIS_CONVENTION}",
-            "center_x_px,center_y_px,semi_major_px,semi_minor_px,"
-            "major_diameter_m,minor_diameter_m,azimuth_rad,status",
-        ]
-    )
+    ]
+    if metadata is not None:
+        header_items.append("result_metadata=" + json.dumps(metadata, ensure_ascii=True, allow_nan=False))
+    labels = ("center_x_px,center_y_px,semi_major_px,semi_minor_px,"
+              "major_diameter_m,minor_diameter_m,azimuth_rad,status")
+    fmt = ["%.17g"] * 7 + ["%d"]
+    if manual_excluded is not None:
+        labels += ",manual_excluded"
+        columns = np.column_stack((columns, manual_excluded))
+        fmt.append("%d")
+    header_items.append(labels)
     try:
         np.savetxt(
             temporary,
             columns,
             delimiter=",",
-            header=header,
+            header="\n".join(header_items),
             comments="# ",
-            fmt=["%.9g"] * 7 + ["%d"],
+            fmt=fmt,
         )
         os.replace(temporary, target)
     finally:

@@ -1,9 +1,11 @@
+from contextlib import nullcontext
 import math
 from queue import Empty, Queue
 from threading import Event, Thread
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
+from pathlib import Path
 from typing import NamedTuple
 import cv2
 import numpy as np
@@ -36,6 +38,7 @@ from ..measurements import (
     save_measurements_csv,
 )
 from ..state import load_legacy_pickle, load_state_bundle, save_state_bundle
+from ..roi_outputs import reserve_next_roi
 
 GUI_SETTING_NAMES = (
     "bbox_mode", "x1_var", "y1_var", "x2_var", "y2_var", "path_var",
@@ -68,10 +71,13 @@ class AppLogic:
         self._image_key = None
         self._full_tile = None
         self._selected_bbox = None
+        self._saved_selection = None
         self._result_image = None
         self._result_key = None
         self._result_bbox = None
         self._result_pixel_size = None
+        self._result_settings = None
+        self._manual_excluded = None
         self._cancel_event = None
 
     @property
@@ -156,6 +162,8 @@ class AppLogic:
         self._result_key = None
         self._result_bbox = None
         self._result_pixel_size = None
+        self._result_settings = None
+        self._manual_excluded = None
         self.app.ovals = None
         self.app.peaks = None
         self.app.display_img = None
@@ -190,21 +198,8 @@ class AppLogic:
         settings["measurement_axis_convention"] = PHYSICAL_AXIS_CONVENTION
         return settings
 
-    def _current_arrays(self):
-        return {
-            name: value
-            for name, value in {
-                "full_tile": self._full_tile,
-                "result_image": self._result_image,
-                "display_img": self.app.display_img,
-                "ovals": self.app.ovals,
-                "peaks": self.app.peaks,
-            }.items()
-            if isinstance(value, np.ndarray)
-        }
-
-    def save_parameters(self, filename=None, include_arrays=True):
-        """Save settings to a versioned ``.cr39state`` bundle."""
+    def save_parameters(self, filename=None, include_context=True, *, roi_id=None):
+        """Save settings and replay geometry, without any image or measurement arrays."""
 
         if filename is None:
             image_path = absolute_path(self.app.path_var.get() or DEFAULT_IMAGE_PATH)
@@ -219,15 +214,20 @@ class AppLogic:
             return None
 
         settings = self._current_settings()
-        arrays = None
-        if include_arrays:
-            arrays = self._current_arrays()
-            settings["image_key"] = self._image_key
-            settings["selected_bbox"] = self._selected_bbox
+        settings["settings_only"] = True
+        if roi_id is not None:
+            settings["roi_id"] = roi_id
+        if include_context:
+            key, bbox = self._image_key, self._selected_bbox
+            if self._saved_selection is not None:
+                key, bbox, _ = self._saved_selection
+            settings["image_key"] = key
+            settings["selected_bbox"] = bbox
             settings["result_key"] = self._result_key
             settings["result_bbox"] = self._result_bbox
             settings["result_pixel_size_m"] = self._result_pixel_size
-        saved_path = save_state_bundle(filename, settings, arrays)
+            settings["result_settings"] = self._result_settings
+        saved_path = save_state_bundle(filename, settings)
         print(f"Parameters saved to {saved_path}")
         return saved_path
 
@@ -258,6 +258,22 @@ class AppLogic:
             settings, arrays = load_state_bundle(source)
 
         settings.setdefault("ext_interpolation_var", DEFAULT_EXTENSION_INTERPOLATION)
+        stored_path = settings.get("path_var")
+        relocated = None
+        if stored_path:
+            original = absolute_path(stored_path)
+            # A dataset and its states can be moved together, e.g. under an etch-stage folder.
+            sibling = source.parent / original.name
+            if sibling.is_file() and not original.is_file():
+                relocated = sibling
+                settings["path_var"] = str(sibling)
+
+        def image_key(values):
+            key = ImageKey(*values)
+            if relocated is not None and Path(key.path).name.casefold() == relocated.name.casefold():
+                key = key._replace(path=str(relocated))
+            return key
+
         for name in GUI_SETTING_NAMES:
             if name not in settings:
                 continue
@@ -267,7 +283,7 @@ class AppLogic:
                 continue
             if name == "path_var":
                 candidate = absolute_path(value) if value else DEFAULT_IMAGE_PATH
-                value = str(candidate if candidate.exists() else DEFAULT_IMAGE_PATH)
+                value = str(candidate)
             try:
                 variable.set(value)
             except (tk.TclError, TypeError, ValueError):
@@ -277,9 +293,10 @@ class AppLogic:
         self._image_key = None
         self._full_tile = None
         self._selected_bbox = None
+        self._saved_selection = None
         self.app.extended_img = None
         if settings.get("image_key") and "full_tile" in arrays and settings.get("selected_bbox"):
-            self._image_key = ImageKey(*settings["image_key"])
+            self._image_key = image_key(settings["image_key"])
             self._full_tile = arrays["full_tile"]
             self._selected_bbox = tuple(settings["selected_bbox"])
             x1, y1, x2, y2 = self._selected_bbox
@@ -290,15 +307,26 @@ class AppLogic:
             and {"result_image", "peaks", "ovals"} <= arrays.keys()
         ):
             self._result_image = arrays["result_image"]
-            self._result_key = ImageKey(*settings["result_key"])
+            self._result_key = image_key(settings["result_key"])
             self._result_bbox = tuple(settings["result_bbox"]) if settings.get("result_bbox") else None
             self._result_pixel_size = settings["result_pixel_size_m"]
+            self._result_settings = settings.get("result_settings") or dict(settings)
             self.app.peaks = arrays["peaks"]
             self.app.ovals = arrays["ovals"]
+            self._manual_excluded = np.zeros(len(self.app.ovals), dtype=bool)
             self.app.display_img = arrays.get("display_img")
         elif "ovals" in arrays or source.suffix.lower() == ".sav":
             self.app.display_img = arrays.get("display_img")
             print("Loaded legacy settings. Use Update Image and Detect Pits to recreate measurements.")
+        elif settings.get("settings_only") and (settings.get("image_key") or settings.get("result_key")):
+            # Keep the saved ROI geometry even before a tile is regenerated.
+            if settings.get("image_key") and settings.get("selected_bbox"):
+                self._saved_selection = (image_key(settings["image_key"]), tuple(settings["selected_bbox"]),
+                                         self._bbox_input_signature())
+            if settings.get("result_key") and settings.get("result_bbox") is None:
+                self.log("Settings loaded. Use Batch Detect to repeat the saved batch analysis.\n")
+            else:
+                self.log("Settings loaded. Use Update Image to rebuild the saved ROI, then Detect Pits.\n")
 
         print(f"Parameters loaded from {source}")
         return source
@@ -384,7 +412,14 @@ class AppLogic:
 
         def show_selection():
             try:
-                bbox = self._requested_bbox()
+                saved = self._saved_selection
+                if saved is not None and saved[0] == key and saved[2] == self._bbox_input_signature():
+                    bbox = saved[1]
+                    h, w = self._full_tile.shape[:2]
+                    if not (0 <= bbox[0] < bbox[2] <= w and 0 <= bbox[1] < bbox[3] <= h):
+                        raise ValueError("Saved ROI is outside the rebuilt image; check the raw image and slice.")
+                else:
+                    bbox = self._requested_bbox()
             except (TypeError, ValueError) as exc:
                 self.log(f"Image error: {exc}\n")
                 return
@@ -401,6 +436,7 @@ class AppLogic:
         show_selection()
 
     def _show_bbox(self, bbox):
+        self._saved_selection = None
         self._selected_bbox = bbox
         x1, y1, x2, y2 = bbox
         cropped = self._full_tile[y1:y2, x1:x2]
@@ -410,6 +446,11 @@ class AppLogic:
             self.open_canvas_window()
         if self.app.image_window and tk.Toplevel.winfo_exists(self.app.image_window):
             self.app.image_window.show_image(cropped)
+
+    def _bbox_input_signature(self):
+        return (self.app.bbox_mode.get(), *(var.get() for var in (
+            self.app.x1_var, self.app.y1_var, self.app.x2_var, self.app.y2_var,
+        )))
 
     def _requested_bbox(self):
         height, width = self._full_tile.shape[:2]
@@ -435,6 +476,7 @@ class AppLogic:
             key = self._check_loaded_image()
             config = self._build_detection_config(key.rate)
             columns, rows = int(self.app.bsw_var.get()), int(self.app.bsh_var.get())
+            fit_settings = self._current_settings()
         except (TypeError, ValueError) as exc:
             self.log(f"Batch detection error: {exc}\n")
             return
@@ -483,7 +525,8 @@ class AppLogic:
             dw, dh, stitched, peaks, ovals = result
             self.app.bdw_var.set(str(dw))
             self.app.bdh_var.set(str(dh))
-            self._remember_results(stitched, key, None, config.pixel_size, peaks, ovals)
+            fit_settings.update(bdw_var=str(dw), bdh_var=str(dh))
+            self._remember_results(stitched, key, None, config.pixel_size, peaks, ovals, settings=fit_settings)
             self.log(f"Batch detection: {len(peaks)} peaks | {format_pit_status_summary(summarize_pit_statuses(ovals))}\n")
             self.display_results(stitched, peaks, ovals, config.pixel_size)
 
@@ -506,6 +549,11 @@ class AppLogic:
             key = self._image_key
             bbox = self._result_bbox
             old_peaks, old_ovals = self.app.peaks, self.app.ovals
+            old_excluded = self._manual_excluded
+            fit_settings = dict(self._result_settings or self._current_settings())
+            replacements = list(fit_settings.get("replacement_regions", []))
+            replacements.append({"bbox": (x1, y1, x2, y2), "settings": self._current_settings()})
+            fit_settings["replacement_regions"] = replacements
         except (TypeError, ValueError, cv2.error) as exc:
             self.log(f"Replace detection error: {exc}\n")
             return
@@ -524,17 +572,64 @@ class AppLogic:
             new_ovals[:, :2] += (x, y)
             keep = ~inside(old_peaks)
             insert = inside(new_peaks)
+            inserted = new_peaks[insert]
+            excluded = np.zeros(len(inserted), dtype=bool)
+            for region in fit_settings.get("manual_exclusion_regions", ()):
+                if region["exclude_area"]:
+                    excluded |= self._centers_in_bbox(inserted, region["bbox"], bbox)
             return (
-                np.concatenate((old_peaks[keep], new_peaks[insert])),
+                np.concatenate((old_peaks[keep], inserted)),
                 np.concatenate((old_ovals[keep], new_ovals[insert])),
+                np.concatenate((old_excluded[keep], excluded)),
             )
 
         def finish(result):
-            peaks, ovals = result
-            self._remember_results(image, key, bbox, pixel_size, peaks, ovals)
-            self.display_results(image, peaks, ovals, pixel_size)
+            peaks, ovals, excluded = result
+            self._remember_results(image, key, bbox, pixel_size, peaks, ovals, settings=fit_settings,
+                                   manual_excluded=excluded)
+            self._display_active_results(pixel_size)
 
         return self._execute_job("Replace Detect", compute, finish, background)
+
+    @staticmethod
+    def _centers_in_bbox(peaks, bbox, result_bbox):
+        x1, y1, x2, y2 = bbox
+        bx, by = result_bbox[:2]
+        px, py = peaks.T
+        return (x1 - bx <= px) & (px < x2 - bx) & (y1 - by <= py) & (py < y2 - by)
+
+    def remove_detection(self, *, exclude_area=False):
+        """Mark centers as excluded while retaining the original detector rows."""
+        if self.busy:
+            return
+        try:
+            pixel_size = self._check_result_scale()
+            if self._result_bbox is None or self._full_tile is None:
+                raise ValueError("Remove Detect requires a previous single-image detection.")
+            bbox = self._requested_bbox()
+            x1, y1, x2, y2 = bbox
+            bx1, by1, bx2, by2 = self._result_bbox
+            if not (bx1 <= x1 < x2 <= bx2 and by1 <= y1 < y2 <= by2):
+                raise ValueError("Removal ROI must be within the previously detected region.")
+        except (TypeError, ValueError) as exc:
+            self.log(f"Remove detection error: {exc}\n")
+            return
+
+        mask = self._centers_in_bbox(self.app.peaks, bbox, self._result_bbox)
+        changed = int((mask & ~self._manual_excluded).sum())
+        if not changed and not exclude_area:
+            self.log("No additional detections were excluded.\n")
+            return
+        self._manual_excluded |= mask
+        fit_settings = dict(self._result_settings)
+        regions = list(fit_settings.get("manual_exclusion_regions", ()))
+        regions.append({"bbox": bbox, "exclude_area": bool(exclude_area)})
+        fit_settings["manual_exclusion_regions"] = regions
+        self._result_settings = fit_settings
+        self.log(f"Manually excluded {changed} detection(s)."
+                 f"{' Region also marked as unusable area.' if exclude_area else ''}\n")
+        self._display_active_results(pixel_size)
+        return changed
 
     def _build_detection_config(self, rate):
         extended_pixel_size = self._pixel_size(rate)
@@ -578,6 +673,7 @@ class AppLogic:
             config = self._build_detection_config(key.rate)
             img_bgr = self.app.extended_img
             bbox = self._selected_bbox
+            fit_settings = self._current_settings()
         except (TypeError, ValueError, cv2.error) as exc:
             self.log(f"Parameter error: {exc}\n")
             return
@@ -587,7 +683,7 @@ class AppLogic:
 
         def finish(result):
             peaks, fitted_ovals = result
-            self._remember_results(img_bgr, key, bbox, config.pixel_size, peaks, fitted_ovals)
+            self._remember_results(img_bgr, key, bbox, config.pixel_size, peaks, fitted_ovals, settings=fit_settings)
             if display:
                 self.display_results(img_bgr, peaks, fitted_ovals, config.pixel_size)
 
@@ -634,11 +730,13 @@ class AppLogic:
 
         return to_numpy(peaks), to_numpy(fitted_ovals)
 
-    def _remember_results(self, image, key, bbox, pixel_size, peaks, ovals):
+    def _remember_results(self, image, key, bbox, pixel_size, peaks, ovals, *, settings=None, manual_excluded=None):
         self._result_image = image
         self._result_key = key
         self._result_bbox = bbox
         self._result_pixel_size = pixel_size
+        self._result_settings = settings if settings is not None else self._current_settings()
+        self._manual_excluded = np.zeros(len(ovals), dtype=bool) if manual_excluded is None else manual_excluded
         self.app.peaks = peaks
         self.app.ovals = ovals
         self.app.display_img = None
@@ -746,12 +844,14 @@ class AppLogic:
         except (TypeError, ValueError) as exc:
             self.log(f"{exc}\n")
             return
-        self.display_results(
-            self._result_image,
-            self.app.peaks,
-            self.app.ovals,
-            pixel_size,
-        )
+        self._display_active_results(pixel_size)
+
+    def _display_active_results(self, pixel_size):
+        peaks, ovals = self.app.peaks, self.app.ovals
+        if self._manual_excluded is not None and self._manual_excluded.any():
+            kept = ~self._manual_excluded
+            peaks, ovals = peaks[kept], ovals[kept]
+        self.display_results(self._result_image, peaks, ovals, pixel_size)
 
     def save_results(self, filename=None):
         """Save the results to a .png file."""
@@ -783,7 +883,7 @@ class AppLogic:
             return None
         return output_path
 
-    def save_measurements(self, filename=None):
+    def save_measurements(self, filename=None, *, roi_id=None):
         """Export internal fits and physical full diameters to an auditable CSV."""
         try:
             pixel_size_m = self._check_result_scale()
@@ -806,6 +906,18 @@ class AppLogic:
             self.app.ovals,
             pixel_size_m,
             accepted_only=False,
+            manual_excluded=self._manual_excluded if self._manual_excluded.any() else None,
+            metadata={
+                "schema_version": 1,
+                "source_image": self._result_key.path,
+                "settings": self._result_settings,
+                "result_key": self._result_key,
+                "result_bbox": self._result_bbox,
+                "result_shape_hw": self._result_image.shape[:2],
+                "roi_id": roi_id,
+                "manual_exclusion_bbox_frame": "full_extended_tile_xyxy",
+                "manual_exclusion_regions": self._result_settings.get("manual_exclusion_regions", []),
+            },
         )
         self.log(
             f"Measurements saved to {output_path}\n"
@@ -813,9 +925,56 @@ class AppLogic:
         )
         return output_path
 
+    def save_selected(self, *, status, measurements, display, display_extension=".png", new_roi=False):
+        """Save any checked outputs next to each other, using the original image stem."""
+        if self.busy:
+            return
+        if not (status or measurements or display):
+            self.log("Select at least one output to save.\n")
+            return
+        if measurements or display:
+            try:
+                self._check_result_scale()
+            except (TypeError, ValueError) as exc:
+                self.log(f"{exc}\n")
+                return
+        if display and not isinstance(self.app.display_img, np.ndarray):
+            self.log("No annotated display is available. Use Show Display first.\n")
+            return
+        if display_extension not in (".png", ".bmp"):
+            raise ValueError("Display extension must be .png or .bmp")
+        image = absolute_path(self.app.path_var.get() or DEFAULT_IMAGE_PATH)
+        directory = filedialog.askdirectory(title="Save Selected Outputs", initialdir=str(image.parent))
+        if not directory:
+            return
+        directory = absolute_path(directory)
+        group = reserve_next_roi(directory, image.stem) if new_roi else nullcontext((image.stem, None))
+        try:
+            with group as (stem, roi_id):
+                jobs = []
+                if status:
+                    jobs.append((self.save_parameters, directory / f"{stem}_state.cr39state", {"roi_id": roi_id}))
+                if measurements:
+                    jobs.append((self.save_measurements, directory / f"{stem}_measurements.csv", {"roi_id": roi_id}))
+                if display:
+                    jobs.append((self.save_results, directory / f"{stem}_results{display_extension}", {}))
+                existing = [path.name for _, path, _ in jobs if path.exists()]
+                if existing and (new_roi or not messagebox.askyesno("Replace existing outputs?", "\n".join(existing))):
+                    if new_roi:
+                        self.log("An ROI output appeared during saving. Retry to reserve the next number.\n")
+                    return
+                for writer, path, kwargs in jobs:
+                    try:
+                        if writer(path, **kwargs) is not None:
+                            self.log(f"Saved {path}\n")
+                    except (ValueError, OSError, cv2.error) as exc:
+                        self.log(f"Could not save {path.name}: {exc}\n")
+        except OSError as exc:
+            self.log(f"Could not prepare output folder: {exc}\n")
+
     def auto_save(self, filepath=DEFAULT_AUTOSAVE_PATH):
         """Auto-save settings only to the per-user runtime directory."""
-        saved_path = self.save_parameters(filename=filepath, include_arrays=False)
+        saved_path = self.save_parameters(filename=filepath, include_context=False)
         print(f"Parameters auto-saved to {saved_path}")
 
     def log(self, msg):

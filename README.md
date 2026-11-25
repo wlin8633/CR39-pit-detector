@@ -41,10 +41,25 @@ If Tkinter is missing, install a Python distribution that includes Tcl/Tk. No CU
 4. On **Pit Detection**, confirm the microscope resolution and physical radius range.
 5. Start with `eps_product_thre_offset = 7` and `eps_RMS_thre = 8`.
 6. Click **Detect Pits** and inspect both the overlay and status summary.
-7. Use **Save Display** for the annotated PNG, **Save Measurements** for the
-   unit-labelled CSV, and **Save Status** for a restorable analysis state.
+7. In **Save Selected**, check **Status**, **Measurements**, or **Display**
+   and choose one destination folder. Keep Status and Measurements for quantitative work.
+   Check **Save as new ROI** to export another ROI of the same image without overwriting an earlier group.
 
 `example_state.sav` is a legacy demonstration file. Only load legacy `.sav` files that you trust because pickle files can execute code while loading.
+
+### Multiple ROIs and manual cleanup
+
+For each ROI on the same image, set the box, click **Update Image**, run
+**Detect Pits**, and use **Save Selected** with **Save as new ROI** checked.
+The number is the largest one already saved for that image in the destination
+folder, plus one; gaps are not filled. All selected files share the new number.
+Leaving the option unchecked uses the original filename and asks before overwriting.
+
+To remove false detections from a completed single-image analysis, set a smaller
+box and click **Remove Detect**. It does not refit or delete the original CSV
+rows; it flags them as manually excluded. Check **Exclude area too** only if
+real pits cannot be observed in that region. Save **Measurements** to keep
+manual edits. See [ROI and density details](user_manual.md#multiple-rois-and-manual-exclusions).
 
 ## CPU and optional GPU
 
@@ -129,14 +144,16 @@ initialization fails, it records the reason and falls back to NumPy/SciPy.
 
 ## State files and absolute paths
 
-New state files use the `.cr39state` extension. They are ZIP bundles containing JSON settings and, for a manual save, compressed NumPy arrays loaded with `allow_pickle=False`.
+New `.cr39state` files are small ZIP bundles of settings and saved ROI geometry. They contain no image pixels or numerical measurements. Keep the original image: after **Load Status**, use **Update Image** to rebuild the ROI and **Detect Pits** to fit it again, or use **Batch Detect** to repeat a batch run.
 
 | Operation | Content | Location |
 |---|---|---|
 | Autosave on normal GUI close | settings only | `%LOCALAPPDATA%\CR39PitDetector\autosave.cr39state` |
 | Automatic startup load | the autosave above, if present | same absolute path |
-| **Save Status** | settings plus available image/result arrays | absolute path chosen by the user |
-| Legacy **Load Status** | trusted `.sav` import | absolute path chosen by the user |
+| **Status** | settings and ROI metadata | `<image>_state.cr39state` |
+| **Measurements** | all candidate fits and measurement metadata | `<image>_measurements.csv` |
+| **Display** | annotated image | `<image>_results.png` or `.bmp` |
+| **Load Status** | current settings, historical array-bearing state, or trusted `.sav` | absolute path chosen by the user |
 
 Writes are atomic: the application finishes a temporary bundle and then replaces the previous autosave. Generated image-slice folders, selected input images, saved states, and result images are all resolved to absolute paths.
 
@@ -155,10 +172,11 @@ diameters. Convert explicitly with `fitted_oval_diameters()` or
 `fitted_ovals_to_measurements()`; the GUI overlay labels full diameters as
 `D=(major,minor)um`.
 
-**Save Measurements** exports all candidates, including rejected rows, with
+The **Measurements** option exports all candidates, including rejected rows, with
 centers and internal semiaxes in pixels, full diameters in metres, azimuth in
-radians, and the integer status code. The CSV header records pixel size and both
-axis conventions so it can be audited independently of the GUI.
+radians, and the integer status code. It exports existing results without
+running detection. The CSV keeps full floating-point precision and records the
+source image, fit ROI, fit settings, physical pixel size and axis conventions.
 
 The fitted-image pixel size is
 `objective_resolution / extended_rate` metres per extended-image pixel. Image

@@ -89,6 +89,7 @@ class PitDetectionNotebookApp:
         # Text area for logs
         self.log_text = tk.Text(master, height=10)
         self.log_text.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
+        self.logic.auto_load(self.AUTOSAVE_FILE)
 
         # Create the separate window for image display (initially hidden)
         self.image_window = None

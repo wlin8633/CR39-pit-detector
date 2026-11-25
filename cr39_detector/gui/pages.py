@@ -96,15 +96,42 @@ class PageSlicing:
         ttk.Button(self.frame, text="Detect Pits", command=lambda: self.logic.detect_pits(background=True)).grid(row=rowp, column=0, padx=5, pady=5)
         ttk.Button(self.frame, text="Replace Detect", command=lambda: self.logic.replace_detection(background=True)).grid(row=rowp, column=1, padx=5, pady=5)
         ttk.Button(self.frame, text="Show Display", command=self.logic.show_current_results).grid(row=rowp, column=2, padx=5, pady=5)
-        ttk.Button(self.frame, text="Save Display", command=self.logic.save_results).grid(row=rowp, column=3, padx=5, pady=5)
+        self.exclude_area = tk.BooleanVar(value=False)
+        ttk.Button(self.frame, text="Remove Detect", command=lambda: self.logic.remove_detection(
+            exclude_area=self.exclude_area.get(),
+        )).grid(row=rowp, column=3, padx=5, pady=5)
+        ttk.Checkbutton(self.frame, text="Exclude area too", variable=self.exclude_area).grid(
+            row=rowp, column=4, sticky=tk.W, padx=5,
+        )
 
         rowp += 1
         ttk.Button(self.frame, text="Load Status", command=self.logic.load_parameters).grid(row=rowp, column=0, pady=5)
-        ttk.Button(self.frame, text="Save Status", command=self.logic.save_parameters).grid(row=rowp, column=1, pady=5)
+        self.save_status = tk.BooleanVar(value=True)
+        self.save_measurements = tk.BooleanVar(value=True)
+        self.save_display = tk.BooleanVar(value=False)
+        self.display_format = tk.StringVar(value=".png")
+        for column, (label, variable) in enumerate((
+            ("Status (.cr39state)", self.save_status),
+            ("Measurements (.csv)", self.save_measurements),
+            ("Display", self.save_display),
+        ), start=1):
+            ttk.Checkbutton(self.frame, text=label, variable=variable).grid(
+                row=rowp, column=column, sticky=tk.W, padx=5,
+            )
+        ttk.Combobox(self.frame, textvariable=self.display_format, values=(".png", ".bmp"),
+                     state="readonly", width=5).grid(row=rowp, column=4, sticky=tk.W)
 
         rowp += 1
         ttk.Button(self.frame, text="Batch Detect", command=lambda: self.logic.batch_detect(background=True)).grid(row=rowp, column=0, padx=5, pady=5)
-        ttk.Button(self.frame, text="Save Measurements", command=self.logic.save_measurements).grid(row=rowp, column=1, padx=5, pady=5)
+        self.new_roi = tk.BooleanVar(value=False)
+        ttk.Button(self.frame, text="Save Selected", command=lambda: self.logic.save_selected(
+            status=self.save_status.get(), measurements=self.save_measurements.get(),
+            display=self.save_display.get(), display_extension=self.display_format.get(),
+            new_roi=self.new_roi.get(),
+        )).grid(row=rowp, column=1, columnspan=2, padx=5, pady=5)
+        ttk.Checkbutton(self.frame, text="Save as new ROI", variable=self.new_roi).grid(
+            row=rowp, column=3, sticky=tk.W, padx=5,
+        )
 
         rowp += 1
         ttk.Label(self.frame, text="Batch scale w:").grid(row=rowp, column=0, sticky=tk.E)
@@ -113,9 +140,6 @@ class PageSlicing:
         rowp += 1
         ttk.Label(self.frame, text="Batch scale h:").grid(row=rowp, column=0, sticky=tk.E)
         ttk.Entry(self.frame, textvariable=self.app.bsh_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        # Load any existing data at startup
-        self.logic.auto_load(self.app.AUTOSAVE_FILE)
 
 class PageDetection:
     def __init__(self, app, logic):

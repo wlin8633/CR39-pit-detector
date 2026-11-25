@@ -1,5 +1,6 @@
 """Exercise image and fit geometry through the GUI callbacks without Tk windows."""
 
+import json
 from pathlib import Path
 from queue import Queue
 from tempfile import TemporaryDirectory
@@ -136,6 +137,11 @@ class GuiScalingTests(unittest.TestCase):
         previous = self.app.ovals
         cubic_state = self.folder / "cubic.cr39state"
         self.logic.save_parameters(cubic_state)
+        legacy_settings, _ = load_state_bundle(cubic_state)
+        legacy_arrays = {
+            "full_tile": self.logic._full_tile, "result_image": self.logic._result_image,
+            "peaks": self.app.peaks, "ovals": self.app.ovals,
+        }
 
         self.app.ext_interpolation_var.set("Linear")
         for action in (self.logic.update_image, self.logic.detect_pits, self.logic.replace_detection,
@@ -153,16 +159,21 @@ class GuiScalingTests(unittest.TestCase):
         self.app.ext_interpolation_var.set("Cubic")
         self.logic.load_parameters(linear_state)
         self.assertEqual(self.app.ext_interpolation_var.get(), "Linear")
-        self.assertEqual(self.logic._result_key.interpolation, "Linear")
+        self.assertIsNone(self.logic._result_key)
+        self.assertIsNone(self.logic._full_tile)
+        self.assertEqual(load_state_bundle(linear_state)[1], {})
+        self.logic.update_image()
         np.testing.assert_array_equal(self.logic._full_tile, linear)
+        self.assertTrue(self.logic.detect_pits())
         self.assertEqual(self.logic._check_result_scale(), 1.38e-7 / 2)
 
-        settings, arrays = load_state_bundle(cubic_state)
+        settings = legacy_settings
+        settings.pop("settings_only")
         settings.pop("ext_interpolation_var")
         for key in ("image_key", "result_key"):
             settings[key] = settings[key][:6]
         old_state = self.folder / "old.cr39state"
-        save_state_bundle(old_state, settings, arrays)
+        save_state_bundle(old_state, settings, legacy_arrays)
         self.logic.load_parameters(old_state)
         self.assertEqual(self.app.ext_interpolation_var.get(), "Cubic")
         np.testing.assert_array_equal(self.logic._full_tile, cubic)
@@ -184,7 +195,7 @@ class GuiScalingTests(unittest.TestCase):
         expected = cv2.warpAffine(tile, transform, size, flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
         np.testing.assert_array_equal(stitched[result_y:, result_x:], expected)
 
-    def test_fractional_batch_stitches_odd_sized_tiles_and_restores_results(self):
+    def test_fractional_batch_stitches_odd_sized_tiles_and_can_be_replayed(self):
         self.logic.update_image()
         selected = self.app.extended_img
         self.logic.batch_detect()
@@ -199,9 +210,119 @@ class GuiScalingTests(unittest.TestCase):
         self.logic.save_parameters(state)
         restored = gui.AppLogic(self.app)
         restored.display_results = Mock()
+        restored.log = Mock()
         restored.load_parameters(state)
-        restored.show_current_results()
+        self.assertIsNone(self.app.extended_img)
+        self.assertIsNone(self.app.ovals)
+        self.assertEqual(load_state_bundle(state)[1], {})
+        self.assertTrue(restored.batch_detect())
         np.testing.assert_array_equal(restored.display_results.call_args.args[0], stitched)
+
+    def test_save_selected_separates_settings_measurements_and_display(self):
+        self.logic.update_image()
+        saved_bbox = self.logic._selected_bbox
+        self.assertTrue(self.logic.detect_pits())
+        self.app.display_img = self.app.extended_img.copy()
+        # A UI edit after detection must not relabel the statistics in the CSV.
+        original_rms = self.app.eps_rms_var.get()
+        self.app.eps_rms_var.set("999")
+        out = self.folder / "out"
+        out.mkdir()
+        with patch.object(gui.filedialog, "askdirectory", return_value=str(out)):
+            self.logic.save_selected(status=True, measurements=True, display=True, display_extension=".bmp")
+        self.assertEqual({p.name for p in out.iterdir()},
+                         {"raw_state.cr39state", "raw_measurements.csv", "raw_results.bmp"})
+        settings, arrays = load_state_bundle(out / "raw_state.cr39state")
+        self.assertEqual(arrays, {})
+        self.assertEqual(settings["result_bbox"], list(saved_bbox))
+        self.assertEqual(settings["eps_rms_var"], "999")
+        metadata_line = next(line for line in (out / "raw_measurements.csv").read_text().splitlines()
+                             if line.startswith("# result_metadata="))
+        provenance = json.loads(metadata_line.split("=", 1)[1])
+        self.assertEqual(provenance["result_bbox"], list(saved_bbox))
+        self.assertEqual(provenance["settings"]["eps_rms_var"], original_rms)
+
+    def test_new_roi_uses_maximum_and_groups_output_types(self):
+        self.logic.update_image()
+        self.assertTrue(self.logic.detect_pits())
+        self.app.display_img = self.app.extended_img.copy()
+        out = self.folder / "out"
+        out.mkdir()
+        for name in ("raw__roi01_state.cr39state", "raw__roi03_results.bmp", "other__roi99_measurements.csv"):
+            (out / name).touch()
+        with patch.object(gui.filedialog, "askdirectory", return_value=str(out)), \
+             patch.object(gui.messagebox, "askyesno") as confirm:
+            self.logic.save_selected(status=True, measurements=True, display=True, new_roi=True)
+            self.logic.save_selected(status=False, measurements=True, display=False, new_roi=True)
+        confirm.assert_not_called()
+        for suffix in ("_state.cr39state", "_measurements.csv", "_results.png"):
+            self.assertTrue((out / ("raw__roi04" + suffix)).is_file())
+        self.assertTrue((out / "raw__roi05_measurements.csv").is_file())
+        settings, _ = load_state_bundle(out / "raw__roi04_state.cr39state")
+        self.assertEqual(settings["roi_id"], "roi04")
+        csv = (out / "raw__roi04_measurements.csv").read_text()
+        provenance = json.loads(next(s.split("=", 1)[1] for s in csv.splitlines()
+                                     if s.startswith("# result_metadata=")))
+        self.assertEqual(provenance["roi_id"], settings["roi_id"])
+        self.assertEqual(Path(provenance["source_image"]).name, "raw.bmp")
+        self.assertFalse(list(out.glob("*.saving")))
+
+    def test_remove_detect_keeps_rows_and_replace_respects_area_masks(self):
+        self.app.bbox_mode.set("Absolute")
+        variables = (self.app.x1_var, self.app.y1_var, self.app.x2_var, self.app.y2_var)
+        for var, value in zip(variables, (20, 10, 100, 90)):
+            var.set(str(value))
+        self.logic.update_image()
+        peaks = np.array([[5, 5], [20, 20], [30, 30], [31, 31]])
+        ovals = np.column_stack((peaks, np.ones((4, 3)), [0, 0, 0, -3]))
+        with patch.object(self.logic, "_run_detection", return_value=(peaks, ovals)):
+            self.assertTrue(self.logic.detect_pits())
+
+        for var, value in zip(variables, (40, 30, 50, 40)):
+            var.set(str(value))
+        with patch.object(self.logic, "_run_detection") as detect:
+            self.assertEqual(self.logic.remove_detection(exclude_area=False), 1)
+        detect.assert_not_called()
+        np.testing.assert_array_equal(self.logic._manual_excluded, [0, 1, 0, 0])
+        np.testing.assert_array_equal(self.logic.display_results.call_args.args[1], peaks[[0, 2, 3]])
+
+        for var, value in zip(variables, (50, 40, 55, 45)):
+            var.set(str(value))
+        self.assertEqual(self.logic.remove_detection(exclude_area=True), 2)
+        csv = self.logic.save_measurements(self.folder / "manual.csv")
+        data = np.loadtxt(csv, delimiter=",", ndmin=2)
+        np.testing.assert_array_equal(data[:, 7], [0, 0, 0, -3])
+        np.testing.assert_array_equal(data[:, 8], [0, 1, 1, 1])
+        self.assertEqual(len(self.app.ovals), 4)
+        meta = json.loads(next(s.split("=", 1)[1] for s in csv.read_text().splitlines()
+                               if s.startswith("# result_metadata=")))
+        self.assertEqual(meta["manual_exclusion_regions"], [
+            {"bbox": [40, 30, 50, 40], "exclude_area": False},
+            {"bbox": [50, 40, 55, 45], "exclude_area": True},
+        ])
+
+        new_peaks = np.array([[2, 2]])
+        new_ovals = np.column_stack((new_peaks, np.ones((1, 4))))
+        with patch.object(self.logic, "_run_detection", return_value=(new_peaks, new_ovals)):
+            self.assertTrue(self.logic.replace_detection())
+        np.testing.assert_array_equal(self.logic._manual_excluded, [0, 1, 1])
+
+    def test_compact_state_rebuilds_exact_saved_roi_after_moving_source(self):
+        self.logic.update_image()
+        selected = self.app.extended_img.copy()
+        saved_bbox = self.logic._selected_bbox
+        # Edited but not applied before saving.
+        self.app.x2_var.set("0.8")
+        state = self.folder / "raw_state.cr39state"
+        self.logic.save_parameters(state)
+        moved = self.folder / "moved"
+        moved.mkdir()
+        state = state.rename(moved / state.name)
+        (self.folder / "raw.bmp").rename(moved / "raw.bmp")
+        self.logic.load_parameters(state)
+        self.assertIsNone(self.app.extended_img)
+        self.logic.update_image()
+        self.assertEqual(self.logic._selected_bbox, saved_bbox)
         np.testing.assert_array_equal(self.app.extended_img, selected)
 
     def test_stop_during_ellipse_fit_preserves_previous_result_and_allows_retry(self):

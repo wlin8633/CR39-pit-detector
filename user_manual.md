@@ -34,7 +34,7 @@ A first-time user can analyze the bundled example as follows:
 3. Open **Pit Detection** and keep the default physical calibration only if it matches the example.
 4. Click **Detect Pits**.
 5. Read the status summary before accepting the fitted sizes.
-6. Use **Save Display** for an annotated PNG or **Save Status** for a restorable state.
+6. Select any combination of **Status**, **Measurements**, and **Display**, then click **Save Selected**.
 
 ## 2. Path policy and generated files
 
@@ -42,12 +42,10 @@ The application resolves paths before storing or using them. This prevents resul
 
 - Input image: absolute path shown in **Raw Image Path**.
 - Slices and extended slices: `%LOCALAPPDATA%\CR39PitDetector\image_tiles`.
-- Exported overlay: absolute path selected in **Save Display**.
-- Measurement table: absolute CSV path selected in **Save Measurements**.
-- Manual state: absolute path selected in **Save Status**.
+- Exported overlay, measurement CSV, and manual state: one folder chosen with **Save Selected**. Filenames share the original image stem. For multiple ROIs, check **Save as new ROI**; all checked files share an identifier such as `__roi04`. The next ID is one higher than the largest existing ID for that source image in that folder, even if intermediate IDs were deleted. Unnumbered saves still ask before replacing files.
 - Autosave: `%LOCALAPPDATA%\CR39PitDetector\autosave.cr39state`.
 
-The autosave occurs during a normal GUI close and is loaded at the next startup. It contains settings only. A manual state can also include the loaded tile, ROI and fitted image, pixel scale, fitted ovals, peaks, and the annotated display. For older state files, load the saved settings, then use **Update Image** and **Detect Pits** to recreate measurements at the confirmed scale.
+Both autosave and manual status contain settings only, with ROI and result provenance in a manual save. They never embed the enlarged image, display, peaks, or fitted ovals. Check **Measurements** to keep completed fits and **Display** to keep the overlay. A manual status requires the original image to rerun detection.
 
 ## 3. Image Slicing page
 
@@ -86,13 +84,42 @@ These change only the overlay, not the numerical fit.
 - **Update Image**: slice if required, load the selected extended slice, and apply the bounding box.
 - **Detect Pits**: run detection on the current crop.
 - **Replace Detect**: re-run a subregion of a previous single-image detection and replace results inside that subregion. The original and replacement fits must share the same image geometry and pixel calibration.
+- **Remove Detect**: mark detections inside the current box as manually excluded from a previous single-image detection, without rerunning the algorithm. See below for the distinction between excluding detections and masking an area.
 - **Show Display**: reopen the current result window.
-- **Save Display**: export the BGR result correctly as a PNG.
-- **Save Measurements**: export all candidates to CSV with internal semiaxes,
+- **Display**: export the annotated image as a PNG or BMP.
+- **Measurements**: export all existing candidates to CSV with internal semiaxes,
   physical full diameters, image azimuth, status, pixel size, and conventions.
-- **Save Status / Load Status**: save a new `.cr39state` or load a new state/trusted legacy `.sav`.
+- **Status / Load Status**: save settings and ROI as `.cr39state` or load a current state, older array-bearing state, or trusted legacy `.sav`. For a new compact state, use **Update Image** (not **Reset Image**, which resets the ROI) and **Detect Pits**, or run **Batch Detect** again.
 - **Batch Detect**: process the configured slice grid. Validate a small representative region first because memory use scales with the stitched image size.
 - **Stop** is available on both tabs during Detect Pits, Replace Detect, Batch Detect, and image slicing. It requests cancellation at the next safe checkpoint. The current NumPy, OpenCV, or CUDA call may need to finish first. A stopped job keeps the last completed measurements and overlay. Wait for the stopped message before starting another job.
+
+### Multiple ROIs and manual exclusions
+
+1. Set the first ROI, click **Update Image**, and run **Detect Pits**.
+2. Check **Save as new ROI** and the outputs you want. Click **Save Selected**
+   and choose a destination folder. For example, Status and Measurements may
+   save as `image__roi04_state.cr39state` and `image__roi04_measurements.csv`.
+3. Set the next ROI, update, detect, and save again. The checkbox stays selected
+   until you clear it or restart the GUI: another save creates a new number even
+   if the ROI did not change. The next number is based on the highest existing
+   state, measurement, or display number for that image, not the number of files.
+
+To clean up a fitted ROI, select a box entirely within it and click
+**Remove Detect**. The operation uses candidate peak centers, hides the
+excluded detections from the overlay, and preserves their fit rows and original
+status codes. In the CSV, a row is accepted for counting when `status=0` and
+it is not marked `manual_excluded=1`. The manual-exclusion column is only
+added when at least one row is marked. Save **Measurements** to preserve edits.
+
+Leave **Exclude area too** off when removing false positives from an otherwise
+readable region. Turn it on when the area itself could not be measured, such as
+a scratch that hides real pits. The CSV `result_metadata` records
+`manual_exclusion_regions`: each rectangle has `bbox=[x1,y1,x2,y2]` in
+full extended-tile pixels and an `exclude_area` flag. An unusable rectangle is
+recorded even if it contains no candidates. The GUI does not compute density:
+subtract the union of the area-exclusion rectangles within `result_bbox` from
+the ROI area, then convert the remaining pixel area using `pixel_size_m²`.
+Overlapping rectangles are subtracted only once.
 
 ## 4. Pit Detection page
 
@@ -187,7 +214,7 @@ diameters in explicitly named fields. GUI labels beginning with `D=` are full
 diameters displayed in micrometres; the green OpenCV overlay still requires
 the internal semiaxes.
 
-The CSV created by **Save Measurements** keeps rejected rows rather than only
+The CSV created by the **Measurements** option keeps rejected rows rather than only
 `OK` rows. This is intentional: an experimental inventory must preserve the
 candidate population and status counts needed to quantify detection loss.
 
@@ -220,10 +247,9 @@ A `.cr39state` is a versioned ZIP bundle:
 
 - `state.json`: explicit GUI settings, schema version,
   `oval_axis_convention=semiaxes_px`, and
-  `measurement_axis_convention=full_diameters_m`;
-- `arrays.npz`: optional compressed numerical arrays.
+  `measurement_axis_convention=full_diameters_m`, and saved ROI information in manual states.
 
-NumPy arrays are loaded with `allow_pickle=False`. Saves use a temporary file plus atomic replacement so an interrupted close is less likely to corrupt the previous autosave.
+An older state may also contain `arrays.npz`; it remains readable with `allow_pickle=False`. A new state does not restore cached fits or reapply manual edits after a new detection. Export **Measurements** before closing a run, especially after **Replace Detect** or **Remove Detect**. The CSV header records its source image, fitted ROI and dimensions, fit settings, and physical pixel size. Saves use a temporary file plus atomic replacement for settings and CSV.
 
 ### Legacy `.sav`
 
@@ -310,4 +336,4 @@ Expected bundled CPU baseline: 164 peaks = 123 `OK` + 26 `FIT` + 15 `RMS`.
 - **Many FIT results**: inspect contour point count and overlap/artifacts; then review `eps_product_thre_offset`.
 - **Many RMS results**: inspect real overlays before increasing `eps_RMS_thre`.
 - **CUDA fallback**: either install the matching optional CuPy package or set **Use CUDA = False**.
-- **Old state warns about pickle**: load it only if trusted, then convert it with **Save Status**.
+- **Old state warns about pickle**: load it only if trusted, then select **Status** in **Save Selected**.
