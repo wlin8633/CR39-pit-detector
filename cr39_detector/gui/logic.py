@@ -38,7 +38,7 @@ from ..measurements import (
     save_measurements_csv,
 )
 from ..state import load_legacy_pickle, load_state_bundle, save_state_bundle
-from ..roi_outputs import reserve_next_roi
+from ..roi_outputs import read_saved_rois, reserve_next_roi
 
 GUI_SETTING_NAMES = (
     "bbox_mode", "x1_var", "y1_var", "x2_var", "y2_var", "path_var",
@@ -72,6 +72,7 @@ class AppLogic:
         self._full_tile = None
         self._selected_bbox = None
         self._saved_selection = None
+        self._recorded_rois = []
         self._result_image = None
         self._result_key = None
         self._result_bbox = None
@@ -215,6 +216,8 @@ class AppLogic:
 
         settings = self._current_settings()
         settings["settings_only"] = True
+        if not include_context:
+            settings["save_dir_var"] = self._save_directory_input()
         if roi_id is not None:
             settings["roi_id"] = roi_id
         if include_context:
@@ -231,7 +234,7 @@ class AppLogic:
         print(f"Parameters saved to {saved_path}")
         return saved_path
 
-    def load_parameters(self, filename=None):
+    def load_parameters(self, filename=None, *, restore_save_directory=False):
         """Load a safe state bundle or import a trusted legacy ``.sav`` file."""
 
         if filename is None:
@@ -257,6 +260,8 @@ class AppLogic:
         else:
             settings, arrays = load_state_bundle(source)
 
+        if restore_save_directory and hasattr(self.app, "save_dir_var"):
+            self.app.save_dir_var.set(settings.get("save_dir_var", ""))
         settings.setdefault("ext_interpolation_var", DEFAULT_EXTENSION_INTERPOLATION)
         stored_path = settings.get("path_var")
         relocated = None
@@ -294,6 +299,7 @@ class AppLogic:
         self._full_tile = None
         self._selected_bbox = None
         self._saved_selection = None
+        self._recorded_rois = []
         self.app.extended_img = None
         if settings.get("image_key") and "full_tile" in arrays and settings.get("selected_bbox"):
             self._image_key = image_key(settings["image_key"])
@@ -328,6 +334,10 @@ class AppLogic:
             else:
                 self.log("Settings loaded. Use Update Image to rebuild the saved ROI, then Detect Pits.\n")
 
+        window = getattr(self.app, "image_window", None)
+        if window and window.winfo_exists():
+            self.refresh_saved_rois()
+            self.refresh_canvas()
         print(f"Parameters loaded from {source}")
         return source
 
@@ -335,7 +345,7 @@ class AppLogic:
         """Load parameters from file if it exists."""
         source = absolute_path(filepath)
         if source.exists():
-            self.load_parameters(source)
+            self.load_parameters(source, restore_save_directory=True)
 
     def browse_file(self):
         filename = filedialog.askopenfilename(
@@ -344,6 +354,43 @@ class AppLogic:
         )
         if filename:
             self.app.path_var.set(str(absolute_path(filename)))
+
+    def _save_directory_input(self):
+        variable = getattr(self.app, "save_dir_var", None)
+        return variable.get().strip() if variable is not None else ""
+
+    def _save_directory(self, image):
+        value = self._save_directory_input()
+        directory = absolute_path(value, base=image.parent) if value else image.parent
+        if not directory.is_dir():
+            raise ValueError(f"Save Directory does not exist: {directory}")
+        if value:
+            self.app.save_dir_var.set(str(directory))
+        return directory
+
+    def browse_save_directory(self):
+        image = absolute_path(self.app.path_var.get() or DEFAULT_IMAGE_PATH)
+        try:
+            initial = self._save_directory(image)
+        except (ValueError, OSError):
+            initial = image.parent
+        directory = filedialog.askdirectory(title="Select Save Directory", initialdir=str(initial), mustexist=True)
+        if directory:
+            self.app.save_dir_var.set(str(absolute_path(directory)))
+            self.refresh_saved_rois()
+
+    def refresh_saved_rois(self, _event=None):
+        """Refresh the blue overlays without changing the current ROI or fitting state."""
+        self._recorded_rois = []
+        if self._image_key is not None and self._full_tile is not None:
+            try:
+                directory = self._save_directory(Path(self._image_key.path))
+                self._recorded_rois = read_saved_rois(directory, self._image_key, self._full_tile.shape)
+            except (ValueError, OSError) as exc:
+                self.log(f"Could not load saved ROIs: {exc}\n")
+        window = getattr(self.app, "image_window", None)
+        if window and window.winfo_exists():
+            window.set_saved_rois(self._recorded_rois)
 
     def reset_image(self, *, background=False):
         if self.busy:
@@ -396,9 +443,28 @@ class AppLogic:
         self.app.scale_var.set(f"Scale: h{scale_y}, w{scale_x}")
         self._full_tile = ext_img
         self._image_key = key
+        self.refresh_saved_rois()
 
     def open_canvas_window(self):
         self.app.show_canvas_window()
+        self.refresh_canvas()
+
+    def refresh_canvas(self):
+        window = self.app.image_window
+        if not window or not window.winfo_exists():
+            return
+        if self._full_tile is None:
+            window.clear_canvas()
+            return
+        zoom = getattr(self.app, "zoom_roi_var", None)
+        if zoom is not None and zoom.get() and self._selected_bbox is not None:
+            image = self.app.extended_img
+            origin = self._selected_bbox[:2]
+        else:
+            image, origin = self._full_tile, (0, 0)
+        window.show_image(image, origin=origin, full_shape=self._full_tile.shape[:2])
+        window.set_saved_rois(self._recorded_rois)
+        window.set_current_roi(self._selected_bbox)
 
     def update_image(self, *, background=False):
         """Apply a bounding box relative to the full extended tile."""
@@ -442,10 +508,10 @@ class AppLogic:
         cropped = self._full_tile[y1:y2, x1:x2]
         self.app.extended_img = cropped
 
-        if not self.app.image_window:
+        if not self.app.image_window or not self.app.image_window.winfo_exists():
             self.open_canvas_window()
-        if self.app.image_window and tk.Toplevel.winfo_exists(self.app.image_window):
-            self.app.image_window.show_image(cropped)
+        else:
+            self.refresh_canvas()
 
     def _bbox_input_signature(self):
         return (self.app.bbox_mode.get(), *(var.get() for var in (
@@ -944,10 +1010,11 @@ class AppLogic:
         if display_extension not in (".png", ".bmp"):
             raise ValueError("Display extension must be .png or .bmp")
         image = absolute_path(self.app.path_var.get() or DEFAULT_IMAGE_PATH)
-        directory = filedialog.askdirectory(title="Save Selected Outputs", initialdir=str(image.parent))
-        if not directory:
+        try:
+            directory = self._save_directory(image)
+        except (ValueError, OSError) as exc:
+            self.log(f"Could not prepare output folder: {exc}\n")
             return
-        directory = absolute_path(directory)
         group = reserve_next_roi(directory, image.stem) if new_roi else nullcontext((image.stem, None))
         try:
             with group as (stem, roi_id):
@@ -967,6 +1034,8 @@ class AppLogic:
                     try:
                         if writer(path, **kwargs) is not None:
                             self.log(f"Saved {path}\n")
+                            if writer == self.save_measurements:
+                                self.refresh_saved_rois()
                     except (ValueError, OSError, cv2.error) as exc:
                         self.log(f"Could not save {path.name}: {exc}\n")
         except OSError as exc:

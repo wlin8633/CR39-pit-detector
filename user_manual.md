@@ -34,7 +34,7 @@ A first-time user can analyze the bundled example as follows:
 3. Open **Pit Detection** and keep the default physical calibration only if it matches the example.
 4. Click **Detect Pits**.
 5. Read the status summary before accepting the fitted sizes.
-6. Select any combination of **Status**, **Measurements**, and **Display**, then click **Save Selected**.
+6. In **Save and reopen**, set **Save Directory** (blank uses the raw image's folder), select the outputs you want, and click **Save Selected**.
 
 ## 2. Path policy and generated files
 
@@ -42,7 +42,7 @@ The application resolves paths before storing or using them. This prevents resul
 
 - Input image: absolute path shown in **Raw Image Path**.
 - Slices and extended slices: `%LOCALAPPDATA%\CR39PitDetector\image_tiles`.
-- Exported overlay, measurement CSV, and manual state: one folder chosen with **Save Selected**. Filenames share the original image stem. For multiple ROIs, check **Save as new ROI**; all checked files share an identifier such as `__roi04`. The next ID is one higher than the largest existing ID for that source image in that folder, even if intermediate IDs were deleted. Unnumbered saves still ask before replacing files.
+- Exported overlay, measurement CSV, and manual state: the folder set under **Save Directory**. Use **Browse…** or enter a path; a blank field follows the raw image's folder. Relative paths are resolved from the raw image's folder. The selected folder is remembered by autosave, not by manual states. **Save Selected** no longer opens a folder picker. Unnumbered saves still ask before replacing files.
 - Autosave: `%LOCALAPPDATA%\CR39PitDetector\autosave.cr39state`.
 
 Both autosave and manual status contain settings only, with ROI and result provenance in a manual save. They never embed the enlarged image, display, peaks, or fitted ovals. Check **Measurements** to keep completed fits and **Display** to keep the overlay. A manual status requires the original image to rerun detection.
@@ -66,6 +66,15 @@ Both autosave and manual status contain settings only, with ROI and result prove
 - **Absolute**: the values are pixel coordinates in the currently loaded extended image.
 
 Coordinates are sorted and clipped against the full extended tile. Repeating **Update Image** with the same bounding box selects the same area. After changing the image path, slice indices, slice dimensions, extension rate, or interpolation, click **Reset Image** to load the new image. This restores the full bounding box and clears previous fits. Reapply the desired box with **Update Image** before detection.
+
+The Canvas shows the whole slice so that you can see where the current
+selection (red) is relative to saved measurements (blue). **Zoom to ROI**
+restores a cropped preview; the ROI inputs still refer to the full extended
+slice. Blue outlines are loaded from matching Measurements CSV metadata in
+**Save Directory** after a tile is loaded. They update when measurements are
+saved or when you click **Refresh ROIs**. The detector maps old boxes through
+raw-image pixels to the current slice and extension rate, and clips them to the
+visible image. Status or Display alone does not make a blue outline.
 
 The interpolation method is saved with the analysis state. Older states without this setting use Cubic, the original behavior. Interpolation does not change the physical pixel scale or add optical detail, but it can change the pixel gradients, fitted contours, and pit counts. For a crowded field, compare both modes on the same raw image and ROI before changing the method used across a series.
 
@@ -96,8 +105,8 @@ These change only the overlay, not the numerical fit.
 ### Multiple ROIs and manual exclusions
 
 1. Set the first ROI, click **Update Image**, and run **Detect Pits**.
-2. Check **Save as new ROI** and the outputs you want. Click **Save Selected**
-   and choose a destination folder. For example, Status and Measurements may
+2. Set **Save Directory**, then check **Save as new ROI** and the outputs you want.
+   Click **Save Selected**. For example, Status and Measurements may
    save as `image__roi04_state.cr39state` and `image__roi04_measurements.csv`.
 3. Set the next ROI, update, detect, and save again. The checkbox stays selected
    until you clear it or restart the GUI: another save creates a new number even

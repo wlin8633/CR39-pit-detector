@@ -45,6 +45,7 @@ class GuiScalingTests(unittest.TestCase):
             sh_var="0", sw_var="0", bbox_mode="Fraction", x1_var="0", y1_var="0",
             x2_var="0.5", y2_var="0.5", use_cuda_var="False", verbose_var="False",
             bsw_var="2", bsh_var="2", obj_res_var="1.38e-7",
+            save_dir_var="",
         )
         self.app = SimpleNamespace(
             **{name: Variable(value) for name, value in settings.items()},
@@ -228,8 +229,10 @@ class GuiScalingTests(unittest.TestCase):
         self.app.eps_rms_var.set("999")
         out = self.folder / "out"
         out.mkdir()
-        with patch.object(gui.filedialog, "askdirectory", return_value=str(out)):
+        self.app.save_dir_var.set(str(out))
+        with patch.object(gui.filedialog, "askdirectory") as picker:
             self.logic.save_selected(status=True, measurements=True, display=True, display_extension=".bmp")
+        picker.assert_not_called()
         self.assertEqual({p.name for p in out.iterdir()},
                          {"raw_state.cr39state", "raw_measurements.csv", "raw_results.bmp"})
         settings, arrays = load_state_bundle(out / "raw_state.cr39state")
@@ -241,6 +244,7 @@ class GuiScalingTests(unittest.TestCase):
         provenance = json.loads(metadata_line.split("=", 1)[1])
         self.assertEqual(provenance["result_bbox"], list(saved_bbox))
         self.assertEqual(provenance["settings"]["eps_rms_var"], original_rms)
+        self.assertEqual(self.logic._recorded_rois, [("Saved", saved_bbox)])
 
     def test_new_roi_uses_maximum_and_groups_output_types(self):
         self.logic.update_image()
@@ -248,10 +252,10 @@ class GuiScalingTests(unittest.TestCase):
         self.app.display_img = self.app.extended_img.copy()
         out = self.folder / "out"
         out.mkdir()
+        self.app.save_dir_var.set(str(out))
         for name in ("raw__roi01_state.cr39state", "raw__roi03_results.bmp", "other__roi99_measurements.csv"):
             (out / name).touch()
-        with patch.object(gui.filedialog, "askdirectory", return_value=str(out)), \
-             patch.object(gui.messagebox, "askyesno") as confirm:
+        with patch.object(gui.messagebox, "askyesno") as confirm:
             self.logic.save_selected(status=True, measurements=True, display=True, new_roi=True)
             self.logic.save_selected(status=False, measurements=True, display=False, new_roi=True)
         confirm.assert_not_called()
@@ -266,6 +270,33 @@ class GuiScalingTests(unittest.TestCase):
         self.assertEqual(provenance["roi_id"], settings["roi_id"])
         self.assertEqual(Path(provenance["source_image"]).name, "raw.bmp")
         self.assertFalse(list(out.glob("*.saving")))
+
+    def test_save_dir_follows_image_when_blank_and_is_preserved_as_gui_preference(self):
+        store = self.folder / "autosave.cr39state"
+        self.assertEqual(self.logic._save_directory(Path(self.app.path_var.get())), self.folder)
+        out = self.folder / "out"
+        out.mkdir()
+        self.app.save_dir_var.set("out")
+        self.assertEqual(self.logic._save_directory(Path(self.app.path_var.get())), out)
+        self.logic.auto_save(store)
+        manual = self.logic.save_parameters(self.folder / "manual.cr39state")
+        self.assertNotIn("save_dir_var", load_state_bundle(manual)[0])
+        self.app.save_dir_var.set("")
+        self.logic.load_parameters(manual)
+        self.assertEqual(self.app.save_dir_var.get(), "")
+        self.logic.auto_load(store)
+        self.assertEqual(self.app.save_dir_var.get(), str(out))
+
+    def test_saved_measurement_boxes_are_reloaded_after_extending_at_a_new_rate(self):
+        self.logic.update_image()
+        box = self.logic._selected_bbox
+        self.assertTrue(self.logic.detect_pits())
+        self.logic.save_selected(status=False, measurements=True, display=False, new_roi=True)
+        self.assertEqual(self.logic._recorded_rois, [("roi01", box)])
+        self.app.ext_rate_var.set("3")
+        self.logic.reset_image()
+        self.assertEqual(self.logic._recorded_rois, [("roi01", tuple(v * 2 for v in box))])
+        self.assertIsNone(self.app.ovals)
 
     def test_remove_detect_keeps_rows_and_replace_respects_area_masks(self):
         self.app.bbox_mode.set("Absolute")

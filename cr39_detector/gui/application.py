@@ -21,6 +21,8 @@ class PitDetectionNotebookApp:
         # ---------------------------------------------------------------------
         self.AUTOSAVE_FILE = str(DEFAULT_AUTOSAVE_PATH)
         self.extended_img = None
+        self.save_dir_var = tk.StringVar(value="")
+        self.zoom_roi_var = tk.BooleanVar(value=False)
         self.bbox_mode = tk.StringVar(value="Fraction")
         self.x1_var = tk.StringVar(value="0")
         self.y1_var = tk.StringVar(value="0")
@@ -78,6 +80,10 @@ class PitDetectionNotebookApp:
 
         # Create the logic handler
         self.logic = AppLogic(self)
+        self.image_window = None
+        self.result_window = None
+        self._disabled_controls = []
+        self._closing = False
 
         # Create pages
         self.page_slicing = PageSlicing(self, self.logic)
@@ -91,12 +97,6 @@ class PitDetectionNotebookApp:
         self.log_text.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
         self.logic.auto_load(self.AUTOSAVE_FILE)
 
-        # Create the separate window for image display (initially hidden)
-        self.image_window = None
-        self.result_window = None
-        self._disabled_controls = []
-        self._closing = False
-
         # Override the close event so we can auto‐save before exit
         self.master.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -109,10 +109,15 @@ class PitDetectionNotebookApp:
             self.image_window.deiconify()
 
     def set_job_controls(self, busy):
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
         for page in (self.page_slicing, self.page_detection):
             page.stop_button.state(["!disabled" if busy else "disabled"])
             if busy:
-                for widget in page.frame.winfo_children():
+                for widget in descendants(page.frame):
                     if widget is page.stop_button:
                         continue
                     if isinstance(widget, (ttk.Button, ttk.Entry, ttk.Radiobutton, ttk.Combobox, ttk.Checkbutton)):

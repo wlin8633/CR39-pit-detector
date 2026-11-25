@@ -41,8 +41,9 @@ If Tkinter is missing, install a Python distribution that includes Tcl/Tk. No CU
 4. On **Pit Detection**, confirm the microscope resolution and physical radius range.
 5. Start with `eps_product_thre_offset = 7` and `eps_RMS_thre = 8`.
 6. Click **Detect Pits** and inspect both the overlay and status summary.
-7. In **Save Selected**, check **Status**, **Measurements**, or **Display**
-   and choose one destination folder. Keep Status and Measurements for quantitative work.
+7. In **Save and reopen**, set **Save Directory** once (blank uses the raw image's
+   folder), then choose **Status**, **Measurements**, or **Display** and click
+   **Save Selected**. Keep Status and Measurements for quantitative work.
    Check **Save as new ROI** to export another ROI of the same image without overwriting an earlier group.
 
 `example_state.sav` is a legacy demonstration file. Only load legacy `.sav` files that you trust because pickle files can execute code while loading.
@@ -54,6 +55,11 @@ For each ROI on the same image, set the box, click **Update Image**, run
 The number is the largest one already saved for that image in the destination
 folder, plus one; gaps are not filled. All selected files share the new number.
 Leaving the option unchecked uses the original filename and asks before overwriting.
+
+The Canvas shows the whole slice by default. Red marks the current ROI; blue
+marks ROIs with saved measurement CSVs in **Save Directory**. The blue outlines
+refresh after **Reset Image** and after saving measurements, or on demand with
+**Refresh ROIs**. Use **Zoom to ROI** to preview the current crop.
 
 To remove false detections from a completed single-image analysis, set a smaller
 box and click **Remove Detect**. It does not refit or delete the original CSV

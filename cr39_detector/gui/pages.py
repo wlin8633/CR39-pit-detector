@@ -7,139 +7,108 @@ class PageSlicing:
     def __init__(self, app, logic):
         self.app = app
         self.logic = logic
-        self.frame = ttk.Frame(self.app.notebook)
+        self.frame = ttk.Frame(app.notebook, padding=(8, 5))
 
-        rowp = 0
-        # Raw image
-        ttk.Label(self.frame, text="Raw Image Path:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.path_var, width=60).grid(row=rowp, column=1, columnspan=3, sticky=tk.W, padx=5)
-        ttk.Button(self.frame, text="Browse...", command=self.logic.browse_file).grid(row=rowp, column=4, padx=5, sticky=tk.W)
+        def section(title):
+            group = ttk.LabelFrame(self.frame, text=title, padding=(6, 3))
+            group.pack(fill=tk.X, pady=3)
+            return group
 
-        rowp += 1
-        ttk.Label(self.frame, text="desired_width:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.dw_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
+        def row(parent):
+            line = ttk.Frame(parent)
+            line.pack(fill=tk.X, pady=2)
+            return line
 
-        rowp += 1
-        ttk.Label(self.frame, text="desired_height:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.dh_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
+        def field(parent, label, variable, width=7):
+            ttk.Label(parent, text=label).pack(side=tk.LEFT, padx=(4, 2))
+            ttk.Entry(parent, textvariable=variable, width=width).pack(side=tk.LEFT, padx=(0, 5))
 
-        rowp += 1
-        ttk.Label(self.frame, text="extended_rate:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.ext_rate_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
+        def button(parent, label, command):
+            control = ttk.Button(parent, text=label, command=command)
+            control.pack(side=tk.LEFT, padx=4)
+            return control
 
-        # slice indices
-        ttk.Label(self.frame, textvariable=self.app.scale_var).grid(row=1, column=2, sticky=tk.W)
+        image = section("1. Image")
+        line = row(image)
+        ttk.Label(line, text="Raw image").pack(side=tk.LEFT, padx=(4, 5))
+        ttk.Entry(line, textvariable=app.path_var, width=56).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        button(line, "Browse…", logic.browse_file)
+        line = row(image)
+        field(line, "Slice width", app.dw_var)
+        field(line, "Height", app.dh_var)
+        field(line, "Row", app.sh_var, 4)
+        field(line, "Column", app.sw_var, 4)
+        field(line, "Extension ×", app.ext_rate_var, 5)
+        ttk.Combobox(line, textvariable=app.ext_interpolation_var, values=tuple(EXTENSION_INTERPOLATIONS),
+                     state="readonly", width=8).pack(side=tk.LEFT, padx=4)
+        line = row(image)
+        button(line, "Reset Image", lambda: logic.reset_image(background=True))
+        button(line, "Open Canvas", logic.open_canvas_window)
+        ttk.Label(line, textvariable=app.scale_var).pack(side=tk.LEFT, padx=6)
 
-        ttk.Label(self.frame, text="h:").grid(row=2, column=2, sticky=tk.W)
-        ttk.Entry(self.frame, textvariable=self.app.sh_var, width=10).grid(row=2, column=2, sticky=tk.W, padx=25)
-
-        ttk.Label(self.frame, text="w:").grid(row=3, column=2, sticky=tk.W)
-        ttk.Entry(self.frame, textvariable=self.app.sw_var, width=10).grid(row=3, column=2, sticky=tk.W, padx=25)
-
-        rowp += 1
-        ttk.Label(self.frame, text="Extension interpolation:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Combobox(
-            self.frame, textvariable=self.app.ext_interpolation_var, values=tuple(EXTENSION_INTERPOLATIONS),
-            state="readonly", width=10,
-        ).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        # Bbox mode
-        rowp += 1
-        ttk.Label(self.frame, text="BoundingBox Mode:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Radiobutton(self.frame, text="Fraction", variable=self.app.bbox_mode, value="Fraction").grid(row=rowp, column=1, sticky=tk.W, padx=5)
-        ttk.Radiobutton(self.frame, text="Absolute", variable=self.app.bbox_mode, value="Absolute").grid(row=rowp, column=2, sticky=tk.W, padx=5)
-
-        # x1, y1, x2, y2
-        rowp += 1
-        ttk.Label(self.frame, text="x1:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.x1_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        rowp += 1
-        ttk.Label(self.frame, text="y1:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.y1_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        rowp += 1
-        ttk.Label(self.frame, text="x2:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.x2_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        rowp += 1
-        ttk.Label(self.frame, text="y2:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.y2_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        rowp += 1
-        ttk.Label(self.frame, text="Parameters for Display:").grid(row=rowp, column=0, sticky=tk.E)
-
-        rowp += 1
-        ttk.Label(self.frame, text="centre_size:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.centre_size, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        ttk.Label(self.frame, text="edge_size:").grid(row=rowp, column=2, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.edge_size, width=10).grid(row=rowp, column=3, sticky=tk.W, padx=5)
-
-        rowp += 1
-        ttk.Label(self.frame, text="font_size:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.font_size, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        ttk.Label(self.frame, text="font_edge_size:").grid(row=rowp, column=2, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.font_edge_size, width=10).grid(row=rowp, column=3, sticky=tk.W, padx=5)
-
-        rowp += 1
-        # Buttons
-        ttk.Button(self.frame, text="Reset Image", command=lambda: self.logic.reset_image(background=True)).grid(row=rowp, column=0, pady=5)
-        ttk.Button(self.frame, text="Update Image", command=lambda: self.logic.update_image(background=True)).grid(row=rowp, column=1, pady=5)
-        ttk.Button(self.frame, text="Open Canvas Window", command=self.logic.open_canvas_window).grid(row=rowp, column=2, pady=5)
-        self.stop_button = ttk.Button(self.frame, text="Stop", command=self.logic.stop, state="disabled")
-        self.stop_button.grid(row=rowp, column=3, padx=5, pady=5)
-
-        rowp += 1
-        # Buttons to Save / Load
-        ttk.Button(self.frame, text="Detect Pits", command=lambda: self.logic.detect_pits(background=True)).grid(row=rowp, column=0, padx=5, pady=5)
-        ttk.Button(self.frame, text="Replace Detect", command=lambda: self.logic.replace_detection(background=True)).grid(row=rowp, column=1, padx=5, pady=5)
-        ttk.Button(self.frame, text="Show Display", command=self.logic.show_current_results).grid(row=rowp, column=2, padx=5, pady=5)
-        self.exclude_area = tk.BooleanVar(value=False)
-        ttk.Button(self.frame, text="Remove Detect", command=lambda: self.logic.remove_detection(
-            exclude_area=self.exclude_area.get(),
-        )).grid(row=rowp, column=3, padx=5, pady=5)
-        ttk.Checkbutton(self.frame, text="Exclude area too", variable=self.exclude_area).grid(
-            row=rowp, column=4, sticky=tk.W, padx=5,
+        roi = section("2. Select ROI")
+        line = row(roi)
+        for mode in ("Fraction", "Absolute"):
+            ttk.Radiobutton(line, text=mode, variable=app.bbox_mode, value=mode).pack(side=tk.LEFT, padx=4)
+        for name, var in (("x1", app.x1_var), ("y1", app.y1_var), ("x2", app.x2_var), ("y2", app.y2_var)):
+            field(line, name, var)
+        button(line, "Update Image", lambda: logic.update_image(background=True))
+        line = row(roi)
+        ttk.Checkbutton(line, text="Zoom to ROI", variable=app.zoom_roi_var, command=logic.refresh_canvas).pack(
+            side=tk.LEFT, padx=4,
         )
+        ttk.Label(line, text="Red: current ROI", foreground="#b00020").pack(side=tk.LEFT, padx=8)
+        ttk.Label(line, text="Blue: saved measurements", foreground="#0059bb").pack(side=tk.LEFT, padx=8)
 
-        rowp += 1
-        ttk.Button(self.frame, text="Load Status", command=self.logic.load_parameters).grid(row=rowp, column=0, pady=5)
+        detect = section("3. Detect and edit")
+        line = row(detect)
+        button(line, "Detect Pits", lambda: logic.detect_pits(background=True))
+        button(line, "Replace Detect", lambda: logic.replace_detection(background=True))
+        self.exclude_area = tk.BooleanVar(value=False)
+        button(line, "Remove Detect", lambda: logic.remove_detection(exclude_area=self.exclude_area.get()))
+        ttk.Checkbutton(line, text="Exclude area too", variable=self.exclude_area).pack(side=tk.LEFT, padx=4)
+        button(line, "Show Display", logic.show_current_results)
+        self.stop_button = button(line, "Stop", logic.stop)
+        self.stop_button.state(["disabled"])
+        line = row(detect)
+        field(line, "Batch columns", app.bsw_var, 4)
+        field(line, "Rows", app.bsh_var, 4)
+        button(line, "Batch Detect", lambda: logic.batch_detect(background=True))
+        field(line, "Marker", app.centre_size, 4)
+        field(line, "Outline", app.edge_size, 4)
+        field(line, "Font", app.font_size, 4)
+        field(line, "Font stroke", app.font_edge_size, 4)
+
+        save = section("4. Save and reopen")
+        line = row(save)
+        ttk.Label(line, text="Save Directory").pack(side=tk.LEFT, padx=(4, 5))
+        entry = ttk.Entry(line, textvariable=app.save_dir_var, width=44)
+        entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        entry.bind("<Return>", logic.refresh_saved_rois)
+        entry.bind("<FocusOut>", logic.refresh_saved_rois)
+        button(line, "Browse…", logic.browse_save_directory)
+        button(line, "Refresh ROIs", logic.refresh_saved_rois)
+        line = row(save)
+        ttk.Label(line, text="Blank uses the original image folder.").pack(side=tk.LEFT, padx=4)
+        line = row(save)
         self.save_status = tk.BooleanVar(value=True)
         self.save_measurements = tk.BooleanVar(value=True)
         self.save_display = tk.BooleanVar(value=False)
-        self.display_format = tk.StringVar(value=".png")
-        for column, (label, variable) in enumerate((
-            ("Status (.cr39state)", self.save_status),
-            ("Measurements (.csv)", self.save_measurements),
-            ("Display", self.save_display),
-        ), start=1):
-            ttk.Checkbutton(self.frame, text=label, variable=variable).grid(
-                row=rowp, column=column, sticky=tk.W, padx=5,
-            )
-        ttk.Combobox(self.frame, textvariable=self.display_format, values=(".png", ".bmp"),
-                     state="readonly", width=5).grid(row=rowp, column=4, sticky=tk.W)
-
-        rowp += 1
-        ttk.Button(self.frame, text="Batch Detect", command=lambda: self.logic.batch_detect(background=True)).grid(row=rowp, column=0, padx=5, pady=5)
         self.new_roi = tk.BooleanVar(value=False)
-        ttk.Button(self.frame, text="Save Selected", command=lambda: self.logic.save_selected(
+        self.display_format = tk.StringVar(value=".png")
+        for label, variable in (
+            ("Status", self.save_status), ("Measurements", self.save_measurements), ("Display", self.save_display),
+        ):
+            ttk.Checkbutton(line, text=label, variable=variable).pack(side=tk.LEFT, padx=4)
+        ttk.Combobox(line, textvariable=self.display_format, values=(".png", ".bmp"),
+                     state="readonly", width=5).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(line, text="Save as new ROI", variable=self.new_roi).pack(side=tk.LEFT, padx=4)
+        button(line, "Save Selected", lambda: logic.save_selected(
             status=self.save_status.get(), measurements=self.save_measurements.get(),
-            display=self.save_display.get(), display_extension=self.display_format.get(),
-            new_roi=self.new_roi.get(),
-        )).grid(row=rowp, column=1, columnspan=2, padx=5, pady=5)
-        ttk.Checkbutton(self.frame, text="Save as new ROI", variable=self.new_roi).grid(
-            row=rowp, column=3, sticky=tk.W, padx=5,
-        )
+            display=self.save_display.get(), display_extension=self.display_format.get(), new_roi=self.new_roi.get(),
+        ))
+        button(line, "Load Status", logic.load_parameters)
 
-        rowp += 1
-        ttk.Label(self.frame, text="Batch scale w:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.bsw_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
-
-        rowp += 1
-        ttk.Label(self.frame, text="Batch scale h:").grid(row=rowp, column=0, sticky=tk.E)
-        ttk.Entry(self.frame, textvariable=self.app.bsh_var, width=10).grid(row=rowp, column=1, sticky=tk.W, padx=5)
 
 class PageDetection:
     def __init__(self, app, logic):
